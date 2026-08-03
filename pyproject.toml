@@ -1,0 +1,25 @@
+[project]
+name = "hermes"
+version = "0.1.0"
+description = "FastAPI core serving a no-build web UI, with an in-process event bus and WebSocket push."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "pydantic-settings",
+    "pyyaml>=6.0.3",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.pytest.ini_options]
+# `auto` lets `async def` test functions be discovered without an explicit
+# `@pytest.mark.asyncio` decorator on every one.
+asyncio_mode = "auto"
+testpaths = ["tests"]

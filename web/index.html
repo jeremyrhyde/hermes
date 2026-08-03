@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1117">
+  <title>Hermes</title>
+  <link rel="stylesheet" href="/ui/style.css">
+  <script defer src="/ui/app.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+</head>
+<body x-data="app()" x-cloak>
+
+  <!--
+    Inline icon symbol library. Lucide-derived (https://lucide.dev).
+    Reference each symbol with: <svg class="icon"><use href="#icon-<name>"/></svg>
+  -->
+  <svg class="sr-only" aria-hidden="true" width="0" height="0">
+    <symbol id="icon-zap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/>
+    </symbol>
+    <symbol id="icon-wifi-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 20h.01"/>
+      <path d="M8.5 16.429a5 5 0 0 1 7 0"/>
+      <path d="M5 12.859a10 10 0 0 1 5.17-2.69"/>
+      <path d="M19 12.859a10 10 0 0 0-2.007-1.523"/>
+      <path d="M2 8.82a15 15 0 0 1 4.177-2.643"/>
+      <path d="M22 8.82a15 15 0 0 0-11.288-3.764"/>
+      <path d="m2 2 20 20"/>
+    </symbol>
+    <symbol id="icon-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>
+      <path d="M12 9v4"/>
+      <path d="M12 17h.01"/>
+    </symbol>
+  </svg>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Top bar                                                            -->
+  <!-- ------------------------------------------------------------------ -->
+  <header class="topbar">
+    <h1 class="brand">Hermes</h1>
+    <div class="topbar-right">
+      <span class="clock" x-text="clockText"></span>
+      <span class="ws-status"
+            :class="wsConnected ? 'online' : 'offline'"
+            :title="wsConnected ? 'Realtime connected' : 'Realtime disconnected'">
+        <span class="dot" aria-hidden="true"></span>
+        <span x-text="wsConnected ? 'live' : 'offline'"></span>
+      </span>
+    </div>
+  </header>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Tabs — add a button + a matching <section> to grow the UI          -->
+  <!-- ------------------------------------------------------------------ -->
+  <nav class="tabs" role="tablist">
+    <button role="tab"
+            :aria-selected="tab === 'dashboard'"
+            :class="{ active: tab === 'dashboard' }"
+            @click="tab = 'dashboard'">Dashboard</button>
+    <button role="tab"
+            :aria-selected="tab === 'events'"
+            :class="{ active: tab === 'events' }"
+            @click="tab = 'events'">Events</button>
+  </nav>
+
+  <main>
+    <!-- Startup-failure banner, populated from /health -->
+    <template x-if="bootFailures.length > 0">
+      <div class="banner" role="alert">
+        <svg class="icon" aria-hidden="true"><use href="#icon-alert"/></svg>
+        <div>
+          <strong x-text="`${bootFailures.length} component(s) failed to start`"></strong>
+          <ul>
+            <template x-for="f in bootFailures" :key="f.component">
+              <li><code x-text="f.component"></code> — <span x-text="f.error"></span></li>
+            </template>
+          </ul>
+        </div>
+      </div>
+    </template>
+
+    <!-- ---------------------------------------------------------------- -->
+    <!-- Dashboard                                                        -->
+    <!-- ---------------------------------------------------------------- -->
+    <section x-show="tab === 'dashboard'" role="tabpanel" class="panel">
+      <h2 class="section-title">Status</h2>
+      <div class="card-grid">
+        <article class="card">
+          <span class="card-label">Server</span>
+          <span class="card-value" x-text="health.status || '—'"></span>
+        </article>
+        <article class="card">
+          <span class="card-label">Realtime</span>
+          <span class="card-value" x-text="wsConnected ? 'connected' : 'offline'"></span>
+        </article>
+        <article class="card">
+          <span class="card-label">Events seen</span>
+          <span class="card-value" x-text="events.length"></span>
+        </article>
+      </div>
+
+      <h2 class="section-title">Actions</h2>
+      <p class="hint">
+        Placeholder control — <code>POST /events/ping</code> publishes an event
+        on the bus, which is broadcast back over the WebSocket. Watch the
+        Events tab. Replace this section with real controls.
+      </p>
+      <button class="btn" @click="ping()" :disabled="pinging">
+        <svg class="icon" aria-hidden="true"><use href="#icon-zap"/></svg>
+        <span x-text="pinging ? 'Sending…' : 'Send ping'"></span>
+      </button>
+    </section>
+
+    <!-- ---------------------------------------------------------------- -->
+    <!-- Events                                                           -->
+    <!-- ---------------------------------------------------------------- -->
+    <section x-show="tab === 'events'" role="tabpanel" class="panel">
+      <div class="section-head">
+        <h2 class="section-title">Live event stream</h2>
+        <button class="btn btn-quiet" @click="events = []" x-show="events.length">Clear</button>
+      </div>
+
+      <template x-if="events.length === 0">
+        <p class="empty">
+          <svg class="icon" aria-hidden="true"><use href="#icon-wifi-off"/></svg>
+          No events yet. Try <code>make ping</code> from a second terminal.
+        </p>
+      </template>
+
+      <ul class="event-list">
+        <template x-for="ev in events" :key="ev._key">
+          <li class="event-row">
+            <span class="event-time" x-text="ev._time"></span>
+            <span class="event-type" x-text="ev.type"></span>
+            <span class="event-subject" x-text="ev.subject || ''"></span>
+            <code class="event-data" x-text="JSON.stringify(ev.data)"></code>
+          </li>
+        </template>
+      </ul>
+    </section>
+  </main>
+
+</body>
+</html>
