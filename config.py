@@ -13,6 +13,7 @@ Example:
 
 from __future__ import annotations
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +26,29 @@ class Settings(BaseSettings):
         LOG_LEVEL: Log level passed to uvicorn / loggers. Default ``"info"``.
         WEB_DIR: Directory containing the static frontend served by FastAPI
             under ``/ui``. Default ``"./web"``.
+        DB_PATH: Path to the SQLite database file. Default ``"./hermes.db"``.
+        SOURCES_CONFIG_PATH: Path to the declarative source list. A missing
+            file yields an empty source list rather than an error, so the
+            server boots unconfigured. Default ``"./sources.yaml"``.
+        ANTHROPIC_API_KEY: Key used for summarization. Empty by default; if
+            unset, the server still boots and ingests articles but does not
+            summarize, and reports the failure at ``/health``.
+        SUMMARY_MODEL: Model used for summarization. Default
+            ``"claude-haiku-4-5"``.
+        SUMMARY_MAX_INPUT_CHARS: Articles longer than this are truncated
+            before the API call, bounding cost on outlier posts (~60k chars
+            ≈ 15k tokens). Default ``60_000``.
+        POLL_TICK_SECONDS: How often the poller loop wakes. Default ``60.0``.
+        POLL_MIN_SECONDS: Lower clamp on each source's adaptive poll
+            interval. Default ``900`` (15 min).
+        POLL_MAX_SECONDS: Upper clamp on each source's adaptive poll
+            interval. Default ``14_400`` (4 h).
+        DEFAULT_SCORE_CUTOFF: Seed value only, used to populate the
+            ``preferences`` table on first run; the live knob is
+            runtime-editable from the UI thereafter. Default ``70``.
+        DEFAULT_MAX_DISPLAYED: Seed value only, used to populate the
+            ``preferences`` table on first run; the live knob is
+            runtime-editable from the UI thereafter. Default ``5``.
 
     Add domain settings (DB path, upstream URLs, credentials, poll intervals)
     as new fields here rather than reading ``os.environ`` at the call site —
@@ -36,6 +60,20 @@ class Settings(BaseSettings):
     PORT: int = 8000
     LOG_LEVEL: str = "info"
     WEB_DIR: str = "./web"
+
+    DB_PATH: str = "./hermes.db"
+    SOURCES_CONFIG_PATH: str = "./sources.yaml"
+
+    ANTHROPIC_API_KEY: str = ""
+    SUMMARY_MODEL: str = "claude-haiku-4-5"
+    SUMMARY_MAX_INPUT_CHARS: int = 60_000
+
+    POLL_TICK_SECONDS: float = Field(default=60.0, gt=0)
+    POLL_MIN_SECONDS: int = Field(default=900, gt=0)
+    POLL_MAX_SECONDS: int = Field(default=14_400, gt=0)
+
+    DEFAULT_SCORE_CUTOFF: int = 70
+    DEFAULT_MAX_DISPLAYED: int = 5
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"

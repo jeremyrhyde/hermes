@@ -9,6 +9,11 @@ dependencies = [
     "pydantic",
     "pydantic-settings",
     "pyyaml>=6.0.3",
+    "aiosqlite",
+    "httpx",
+    "feedparser",
+    "trafilatura",
+    "anthropic",
 ]
 
 [dependency-groups]
