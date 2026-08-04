@@ -41,3 +41,27 @@ def now() -> datetime:
 
 def read_fixture(name: str) -> bytes:
     return (FIXTURES / name).read_bytes()
+
+
+def make_article(
+    *,
+    article_id: int = 1,
+    title: str = "The First Post",
+    text: str | None = "Body text.",
+    author: str | None = "Scott Alexander",
+) -> "Article":
+    """Build an Article for tests without touching the DB."""
+    from schemas.article import Article
+
+    return Article(
+        id=article_id,
+        source_id="acx",
+        guid=f"g{article_id}",
+        canonical_url=f"https://acx.substack.com/p/{article_id}",
+        title=title,
+        author=author,
+        published_at=datetime(2026, 8, 2, tzinfo=timezone.utc),
+        fetched_at=datetime(2026, 8, 2, tzinfo=timezone.utc),
+        text=text,
+        word_count=len((text or "").split()),
+    )
