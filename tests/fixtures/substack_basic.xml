@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Astral Codex Ten</title>
+    <link>https://astralcodexten.substack.com</link>
+    <ttl>60</ttl>
+    <item>
+      <title>The First Post</title>
+      <link>https://astralcodexten.substack.com/p/first?utm_source=rss</link>
+      <guid isPermaLink="false">https://astralcodexten.substack.com/p/first</guid>
+      <dc:creator>Scott Alexander</dc:creator>
+      <pubDate>Sat, 02 Aug 2026 10:00:00 GMT</pubDate>
+      <content:encoded xmlns:content="http://purl.org/rss/1.0/modules/content/">
+        <![CDATA[<p>Full body of the first post.</p>]]>
+      </content:encoded>
+    </item>
+    <item>
+      <title>The Second Post</title>
+      <link>https://astralcodexten.substack.com/p/second</link>
+      <guid isPermaLink="false">https://astralcodexten.substack.com/p/second</guid>
+      <dc:creator>Scott Alexander</dc:creator>
+      <pubDate>Fri, 01 Aug 2026 10:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
