@@ -327,3 +327,40 @@ class StateStore:
             params,
         )
         return [row["id"] for row in await cur.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Feed
+    # ------------------------------------------------------------------
+    async def feed_items(self, limit: int = 50, offset: int = 0) -> list[dict]:
+        """Summarized articles, newest first, joined with source identity.
+
+        Returns plain dicts; assembling the FeedItem DTO is the API layer's job
+        (spec section 12.5) so the wire format can evolve independently.
+        """
+
+        cur = await self.db.execute(
+            """
+            SELECT a.id            AS article_id,
+                   a.canonical_url AS url,
+                   a.published_at  AS published_at,
+                   s.headline      AS headline,
+                   s.bullets_json  AS bullets_json,
+                   src.id          AS source_id,
+                   src.name        AS source_name,
+                   src.type        AS source_type,
+                   (SELECT value FROM ratings r
+                     WHERE r.article_id = a.id
+                     ORDER BY r.created_at DESC LIMIT 1) AS rating,
+                   (SELECT score FROM scores sc
+                     WHERE sc.article_id = a.id
+                     ORDER BY sc.created_at DESC LIMIT 1) AS score
+              FROM articles a
+              JOIN summaries s ON s.article_id = a.id
+              JOIN sources  src ON src.id = a.source_id
+             WHERE a.summarized_at IS NOT NULL
+             ORDER BY COALESCE(a.published_at, a.fetched_at) DESC
+             LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        )
+        return [dict(row) for row in await cur.fetchall()]
