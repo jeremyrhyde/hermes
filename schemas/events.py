@@ -4,10 +4,10 @@ Events are how decoupled components talk: a producer publishes without caring
 who listens; the WebSocket manager (and any future subscriber) registers
 interest without caring what triggered the event.
 
-The event types below are deliberately generic placeholders — replace them
-with the real domain vocabulary once it exists. The wire shape (``type``,
-``subject``, ``data``, ``timestamp``, ``source``) is what the web UI's
-``applyEvent()`` switch is written against, so keep that stable.
+The event types below are the feed-pipeline vocabulary: polling, ingestion,
+summarization, scoring, profile distillation, and errors. The wire shape
+(``type``, ``subject``, ``data``, ``timestamp``, ``source``) is what the web
+UI's ``applyEvent()`` switch is written against, so keep that stable.
 """
 
 from __future__ import annotations
@@ -23,17 +23,29 @@ class EventType(str, Enum):
     """Discriminator for events on the bus.
 
     Values:
-        SYSTEM_READY: Startup finished; the server is serving requests.
-            Payload: ``{"detail": str}``.
-        SYSTEM_ERROR: A component failed in a way the UI should surface.
-            Payload: ``{"detail": str}``.
-        STATE_CHANGED: Generic "something the UI renders has changed".
-            Payload: ``{"state": <dict>}``, ``subject`` set to the entity id.
+        SYSTEM_READY: Startup finished. Payload ``{"detail": str}``.
+        SOURCE_POLLED: One source finished a poll cycle.
+            Payload ``{"source_id": str, "new_articles": int,
+                       "not_modified": bool}``.
+        ARTICLE_INGESTED: A new article row was created.
+            Payload ``{"article_id": int, "title": str, "source_id": str}``.
+        ARTICLE_SUMMARIZED: A summary landed; the UI can render the card.
+            Payload ``{"item": <FeedItem dict>}``.
+        ARTICLE_SCORED: A score landed. Phase 3.
+            Payload ``{"article_id": int, "score": int}``.
+        PROFILE_PROPOSED: A distillation awaits review. Phase 4.
+            Payload ``{"version": str}``.
+        PIPELINE_ERROR: A stage failed for one article or source.
+            Payload ``{"stage": str, "subject": str, "error": str}``.
     """
 
     SYSTEM_READY = "system_ready"
-    SYSTEM_ERROR = "system_error"
-    STATE_CHANGED = "state_changed"
+    SOURCE_POLLED = "source_polled"
+    ARTICLE_INGESTED = "article_ingested"
+    ARTICLE_SUMMARIZED = "article_summarized"
+    ARTICLE_SCORED = "article_scored"
+    PROFILE_PROPOSED = "profile_proposed"
+    PIPELINE_ERROR = "pipeline_error"
 
 
 class Event(BaseModel):
@@ -71,11 +83,11 @@ class Event(BaseModel):
                     "source": "startup",
                 },
                 {
-                    "type": "state_changed",
-                    "subject": "widget-1",
-                    "data": {"state": {"active": True}},
-                    "timestamp": "2026-08-02T17:00:01Z",
-                    "source": "api",
+                    "type": "article_summarized",
+                    "subject": "42",
+                    "data": {"item": {"article_id": 42, "headline": "..."}},
+                    "timestamp": "2026-08-02T17:00:00Z",
+                    "source": "pipeline",
                 },
             ]
         },

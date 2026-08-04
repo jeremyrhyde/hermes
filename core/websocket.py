@@ -31,8 +31,12 @@ logger = logging.getLogger(__name__)
 # a type that isn't listed simply never reaches the UI.
 BROADCAST_TYPES: tuple[EventType, ...] = (
     EventType.SYSTEM_READY,
-    EventType.SYSTEM_ERROR,
-    EventType.STATE_CHANGED,
+    EventType.SOURCE_POLLED,
+    EventType.ARTICLE_INGESTED,
+    EventType.ARTICLE_SUMMARIZED,
+    EventType.ARTICLE_SCORED,
+    EventType.PROFILE_PROPOSED,
+    EventType.PIPELINE_ERROR,
 )
 
 

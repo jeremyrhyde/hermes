@@ -17,7 +17,8 @@ than reaching into ``app.state`` inline.
 URL layout
 ----------
 
-API routes live at the root (``/events/...``, ``/ws``). Static frontend
+API routes live at the root (``/ws``, and the domain routers added as the
+feature set grows). Static frontend
 assets are mounted under ``/ui/`` so they cannot collide with API paths. The
 mount is optional — if ``settings.WEB_DIR`` does not exist the app still
 boots and a warning is logged.
@@ -37,8 +38,6 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.staticfiles import StaticFiles
-
-from schemas.events import Event, EventType
 
 if TYPE_CHECKING:  # pragma: no cover
     from config import Settings
@@ -73,33 +72,6 @@ def _ws_manager(app_or_ws: Any) -> "WebSocketManager":
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
-
-
-def _build_events_router() -> APIRouter:
-    """Placeholder router that proves the event -> WebSocket path works.
-
-    Replace with the real domain routers once the feature set is defined.
-    The pattern to copy: take the components off ``app.state`` via a helper,
-    do the work, publish an :class:`Event`, and let the bus fan it out to
-    every connected UI client.
-    """
-
-    router = APIRouter(prefix="/events", tags=["events"])
-
-    @router.post("/ping")
-    async def ping(request: Request) -> dict[str, Any]:
-        """Publish a ``state_changed`` event to all WebSocket clients."""
-
-        event = Event(
-            type=EventType.STATE_CHANGED,
-            subject="ping",
-            data={"state": {"pong": True}},
-            source="api",
-        )
-        await _bus(request).publish(event)
-        return {"published": event.model_dump(mode="json")}
-
-    return router
 
 
 def _build_ws_router() -> APIRouter:
@@ -166,7 +138,6 @@ def create_app(
     app.state.ws_manager = ws_manager
     app.state.settings = settings
 
-    app.include_router(_build_events_router())
     app.include_router(_build_ws_router())
 
     if mount_static and settings is not None:

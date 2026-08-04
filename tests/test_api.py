@@ -6,6 +6,8 @@ no real lifespan) so they run anywhere without configuration.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -38,27 +40,52 @@ def client(bus: EventBus, ws_manager: WebSocketManager) -> TestClient:
     return TestClient(app)
 
 
-def test_ping_publishes_an_event(client: TestClient) -> None:
-    """POST /events/ping returns the event it put on the bus."""
+class _RecordingConnection:
+    """Stand-in for a ``WebSocket`` that records what was sent to it."""
 
-    res = client.post("/events/ping")
-    assert res.status_code == 200
+    def __init__(self) -> None:
+        self.accepted = False
+        self.sent: list[str] = []
 
-    published = res.json()["published"]
-    assert published["type"] == EventType.STATE_CHANGED.value
-    assert published["subject"] == "ping"
-    assert published["source"] == "api"
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def send_text(self, payload: str) -> None:
+        self.sent.append(payload)
 
 
-def test_websocket_receives_broadcast_events(client: TestClient) -> None:
+async def test_websocket_receives_broadcast_events(
+    bus: EventBus, ws_manager: WebSocketManager
+) -> None:
     """An event published while a client is connected reaches that client."""
 
-    with client.websocket_connect("/ws") as ws:
-        client.post("/events/ping")
-        received = ws.receive_json()
+    connection = _RecordingConnection()
+    await ws_manager.connect(connection)  # type: ignore[arg-type]
+    assert connection.accepted
 
-    assert received["type"] == EventType.STATE_CHANGED.value
-    assert received["data"] == {"state": {"pong": True}}
+    await bus.publish(
+        Event(
+            type=EventType.ARTICLE_SUMMARIZED,
+            subject="42",
+            data={"item": {"article_id": 42}},
+            source="test",
+        )
+    )
+
+    assert len(connection.sent) == 1
+    received = json.loads(connection.sent[0])
+    assert received["type"] == EventType.ARTICLE_SUMMARIZED.value
+    assert received["subject"] == "42"
+    assert received["data"] == {"item": {"article_id": 42}}
+
+
+def test_websocket_endpoint_accepts_connections(
+    client: TestClient, ws_manager: WebSocketManager
+) -> None:
+    """The /ws route upgrades and registers the client with the manager."""
+
+    with client.websocket_connect("/ws"):
+        assert ws_manager.active_count == 1
 
 
 async def test_bus_isolates_failing_subscribers(bus: EventBus) -> None:
