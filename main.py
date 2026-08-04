@@ -6,9 +6,11 @@ Initialization order:
 
 1. :class:`config.Settings`
 2. :class:`core.events.EventBus`
-3. Domain services from ``services/`` (none yet — see ``_build_components``)
-4. :class:`core.websocket.WebSocketManager` (subscribed to the bus)
-5. :func:`core.api.create_app` -> :class:`fastapi.FastAPI`
+3. :class:`core.state.StateStore` (opened, migrated, sources upserted)
+4. Domain services from ``services/``: the source registry and its drivers,
+   the summarizer, the pipeline, and the poller
+5. :class:`core.websocket.WebSocketManager` (subscribed to the bus)
+6. :func:`core.api.create_app` -> :class:`fastapi.FastAPI`
 
 Shutdown is the reverse of startup: stop anything with a lifecycle, in the
 opposite order it was started.
@@ -30,46 +32,124 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+import httpx
 import uvicorn
+from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
-from config import Settings
+from config import Settings, load_sources_config
 from core.api import create_app
 from core.events import EventBus
+from core.state import StateStore
 from core.websocket import WebSocketManager
 from schemas.events import Event, EventType
+from services.pipeline import Pipeline
+from services.poller import Poller
+from services.sources.registry import SourceRegistry
+from services.sources.substack import SubstackDriver
+from services.summarizer import ClaudeSummarizer
 
 logger = logging.getLogger(__name__)
 
 
 async def _build_components(
     settings: Settings,
-) -> tuple[EventBus, WebSocketManager, list[dict[str, Any]]]:
+    http: httpx.AsyncClient,
+) -> tuple[EventBus, WebSocketManager, StateStore, Poller, list[dict[str, Any]]]:
     """Build and wire every runtime component.
 
     Returns the components plus a list of startup failures for ``/health``.
     A failure dict has the shape ``{"component": str, "error": str}``.
 
-    A component that fails to construct should be appended to ``failures``
-    and logged rather than raised — the server stays up and an operator can
-    see exactly what did not come online at ``/health``.
+    A component that fails to construct is appended to ``failures`` and logged
+    rather than raised — the server stays up and an operator sees exactly what
+    did not come online at ``/health``.
+
+    Args:
+        settings: Application settings.
+        http: The shared HTTP client handed to the source drivers. Owned by
+            the caller (the lifespan), which closes it on shutdown — see
+            :func:`_make_lifespan`.
     """
 
     failures: list[dict[str, Any]] = []
 
-    # 1. Event bus.
     bus = EventBus()
 
-    # 2. Domain services go here. Construct each one, hand it ``bus``, and
-    #    ``await service.start()`` if it has a lifecycle. Wrap each in
-    #    try/except and append to ``failures`` on error.
+    store = StateStore(settings.DB_PATH)
+    await store.start()
+    await store.seed_preference("score_cutoff", str(settings.DEFAULT_SCORE_CUTOFF))
+    await store.seed_preference("max_displayed", str(settings.DEFAULT_MAX_DISPLAYED))
 
-    # 3. WebSocket manager — subscribes itself to the bus, so anything
-    #    published from here on reaches every connected browser.
+    # Sources: declarative fields are refreshed from YAML on every boot; poll
+    # state (etag/hash/backoff) is deliberately preserved by upsert_source.
+    #
+    # A malformed sources.yaml (bad YAML syntax, or a shape that fails
+    # validation) must not kill the process: the operator gets a running
+    # server telling them what is wrong at /health, not a dead one.
+    try:
+        sources = load_sources_config(settings.SOURCES_CONFIG_PATH).sources
+    except Exception as exc:
+        failures.append({
+            "component": "sources_config",
+            "error": f"could not load {settings.SOURCES_CONFIG_PATH}: "
+                     f"{type(exc).__name__}: {exc}",
+        })
+        logger.exception(
+            "main: could not load sources config %s — booting with no sources",
+            settings.SOURCES_CONFIG_PATH,
+        )
+        sources = []
+
+    if not sources:
+        logger.warning(
+            "main: no sources configured (looked at %s). Server will boot with "
+            "an empty feed — copy sources.yaml.example to sources.yaml.",
+            settings.SOURCES_CONFIG_PATH,
+        )
+    for cfg in sources:
+        await store.upsert_source(cfg)
+
+    registry = SourceRegistry()
+    registry.register(SubstackDriver(http))
+
+    if not settings.ANTHROPIC_API_KEY:
+        failures.append({
+            "component": "summarizer",
+            "error": "ANTHROPIC_API_KEY is not set; articles will be ingested "
+                     "but not summarized",
+        })
+        logger.error("main: ANTHROPIC_API_KEY is not set — summarization disabled")
+        summarizer = None
+    else:
+        summarizer = ClaudeSummarizer(
+            AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY),
+            model=settings.SUMMARY_MODEL,
+            max_input_chars=settings.SUMMARY_MAX_INPUT_CHARS,
+        )
+
+    # WebSocket manager — subscribes itself to the bus, so anything published
+    # from here on reaches every connected browser.
     ws_manager = WebSocketManager()
     ws_manager.subscribe_to_bus(bus)
 
-    return bus, ws_manager, failures
+    pipeline = Pipeline(
+        store=store, registry=registry, summarizer=summarizer, bus=bus
+    )
+    poller = Poller(
+        store=store,
+        pipeline=pipeline,
+        bus=bus,
+        min_seconds=settings.POLL_MIN_SECONDS,
+        max_seconds=settings.POLL_MAX_SECONDS,
+        tick_seconds=settings.POLL_TICK_SECONDS,
+    )
+    # Without a summarizer the loop stays parked: the pipeline would ingest
+    # articles it can never summarize, burning bandwidth for nothing.
+    if summarizer is not None:
+        await poller.start()
+
+    return bus, ws_manager, store, poller, failures
 
 
 def _make_lifespan(settings: Settings):
@@ -81,30 +161,50 @@ def _make_lifespan(settings: Settings):
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        bus, ws_manager, failures = await _build_components(settings)
-
-        # Wire components onto app.state so endpoints + /health can read them.
-        app.state.event_bus = bus
-        app.state.ws_manager = ws_manager
-        app.state.settings = settings
-        app.state.startup_failures = failures
-
-        logger.info("main: ready — %d startup failure(s)", len(failures))
-        await bus.publish(
-            Event(
-                type=EventType.SYSTEM_READY,
-                data={"detail": f"listening on {settings.HOST}:{settings.PORT}"},
-                source="startup",
+        # The HTTP client is owned here rather than by any one component:
+        # ``async with`` binds its lifetime to the lifespan scope, so it is
+        # closed even if _build_components raises part-way through startup.
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            bus, ws_manager, store, poller, failures = await _build_components(
+                settings, http
             )
-        )
 
-        try:
-            yield
-        finally:
-            logger.info("main: shutting down")
-            # Stop services here in reverse construction order. Wrap each
-            # call in try/except so one failing teardown doesn't skip the
-            # rest.
+            # Wire components onto app.state so endpoints + /health can read
+            # them.
+            app.state.event_bus = bus
+            app.state.ws_manager = ws_manager
+            app.state.state_store = store
+            # Only expose the poller if it actually started. Without an API key
+            # the poller object exists but its loop was never launched, and the
+            # manual POST /sources/{id}/poll route would drive a pipeline whose
+            # summarizer is None. Exposing None makes that route return 503.
+            app.state.poller = poller if poller.is_running else None
+            app.state.settings = settings
+            app.state.startup_failures = failures
+
+            logger.info("main: ready — %d startup failure(s)", len(failures))
+            await bus.publish(
+                Event(
+                    type=EventType.SYSTEM_READY,
+                    data={"detail": f"listening on {settings.HOST}:{settings.PORT}"},
+                    source="startup",
+                )
+            )
+
+            try:
+                yield
+            finally:
+                # Reverse construction order. Each teardown is wrapped so one
+                # failure does not skip the rest.
+                logger.info("main: shutting down")
+                for label, coro in (
+                    ("poller.stop", poller.stop()),
+                    ("store.close", store.close()),
+                ):
+                    try:
+                        await coro
+                    except Exception:  # pragma: no cover
+                        logger.exception("main: %s failed", label)
 
     return lifespan
 
@@ -136,6 +236,8 @@ def build_app(settings: Settings | None = None) -> FastAPI:
     app = create_app(
         event_bus=EventBus(),
         ws_manager=WebSocketManager(),
+        state_store=None,
+        poller=None,
         settings=settings,
     )
     app.router.lifespan_context = _make_lifespan(settings)

@@ -97,3 +97,25 @@ def test_sources_endpoint_reports_health(client: TestClient) -> None:
     assert rows[0]["enabled"] is True
     assert rows[0]["error_count"] == 0
     assert rows[0]["disabled"] is False
+
+
+def test_manual_poll_returns_503_when_poller_absent(client: TestClient) -> None:
+    """No poller on app.state means no manual poll.
+
+    ``main.py`` deliberately exposes ``app.state.poller = None`` when the
+    poller never started (no ANTHROPIC_API_KEY), because the pipeline behind
+    it has no summarizer. This route must fail cleanly rather than drive it.
+    """
+
+    res = client.post("/sources/acx/poll")
+
+    assert res.status_code == 503
+    assert "poller" in res.json()["detail"]
+
+
+def test_manual_poll_checks_poller_before_source_exists(
+    client: TestClient,
+) -> None:
+    """503 wins over 404 — the service is down, the lookup is moot."""
+
+    assert client.post("/sources/nope/poll").status_code == 503
