@@ -13,8 +13,13 @@ Example:
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import yaml
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from schemas.source import SourcesConfig
 
 
 class Settings(BaseSettings):
@@ -78,3 +83,22 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
+
+
+def load_sources_config(path: str | Path | None = None) -> SourcesConfig:
+    """Read and validate ``sources.yaml`` at *path*.
+
+    Returns an empty config if the file does not exist, so the server boots
+    before any sources are configured.
+    """
+
+    if path is None:
+        path = Settings().SOURCES_CONFIG_PATH
+    p = Path(path)
+    if not p.exists():
+        return SourcesConfig(sources=[])
+
+    with p.open("r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+
+    return SourcesConfig.model_validate(raw)

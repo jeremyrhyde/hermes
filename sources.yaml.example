@@ -1,0 +1,25 @@
+# Hermes sources. Copy to `sources.yaml` and edit.
+#
+# Each entry needs id, type, name, and feed_url. `type` selects the driver
+# registered in main.py — phase 1 ships only "substack".
+#
+# `params` is free-form per-driver data. Adding a source type means adding keys
+# here, never changing the SourceConfig model.
+
+sources:
+  - id: astralcodexten
+    type: substack
+    name: Astral Codex Ten
+    feed_url: https://www.astralcodexten.com/feed
+
+  - id: platformer
+    type: substack
+    name: Platformer
+    feed_url: https://www.platformer.news/feed
+
+  # Set enabled: false to keep a source configured but stop polling it.
+  - id: example-paused
+    type: substack
+    name: Paused Example
+    feed_url: https://example.substack.com/feed
+    enabled: false
