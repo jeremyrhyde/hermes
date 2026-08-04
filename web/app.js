@@ -1,31 +1,30 @@
 /* Hermes web UI — single Alpine.js state object.
  *
  * Architecture:
- *   - REST: fetch() against /health and the domain endpoints
+ *   - REST: fetch() against /feed/, /sources/ and /health
  *   - Realtime: WebSocket /ws receives Event JSON; applyEvent() patches state
- *   - Optimism: user actions flip UI immediately; revert on HTTP failure
+ *   - applyEvent tolerates unknown event types: log and ignore, never throw
  *
- * No build step. No external deps beyond Alpine.js (loaded via CDN in index.html).
+ * No build step. No external deps beyond Alpine.js and its collapse plugin
+ * (both loaded via CDN in index.html).
  */
 
 function app() {
   return {
     // ---------------------------------------------------------------- state
-    tab: 'dashboard',
-    health: {},
-    bootFailures: [],
-    events: [],
+    tab: 'feed',
+    items: [],
+    sources: [],
+    expanded: null,
     wsConnected: false,
+    bootFailures: [],
     clockText: '',
-    pinging: false,
 
     // ---------------------------------------------------------------- internals
     _ws: null,
     _backoff: 1000,
     _maxBackoff: 30000,
     _clockTimer: null,
-    _seq: 0,
-    _maxEvents: 200,
 
     // ---------------------------------------------------------------- lifecycle
     async init() {
@@ -38,13 +37,20 @@ function app() {
     async refreshAll() {
       // Parallel fetch so one failing endpoint doesn't blank the rest of the
       // page. Add new endpoints to this array as the API grows.
-      const [health] = await Promise.allSettled([
+      const [feed, sources, health] = await Promise.allSettled([
+        this._json('/feed/?limit=100'),
+        this._json('/sources/'),
         this._json('/health'),
       ]);
 
+      if (feed.status === 'fulfilled') this.items = feed.value || [];
+      else console.error('refreshAll: /feed/', feed.reason);
+
+      if (sources.status === 'fulfilled') this.sources = sources.value || [];
+      else console.error('refreshAll: /sources/', sources.reason);
+
       if (health.status === 'fulfilled') {
-        this.health = health.value || {};
-        this.bootFailures = this.health.startup_failures || [];
+        this.bootFailures = health.value?.startup_failures || [];
       } else {
         console.error('refreshAll: /health', health.reason);
       }
@@ -68,38 +74,26 @@ function app() {
       this.clockText = `${h12}:${String(m).padStart(2, '0')} ${period}`;
     },
 
-    _recordEvent(event) {
-      // Stamp a render key and a local time string, newest first, capped so a
-      // long-lived kiosk session can't grow the array without bound.
-      const stamped = {
-        ...event,
-        _key: ++this._seq,
-        _time: new Date().toLocaleTimeString(),
-      };
-      this.events.unshift(stamped);
-      if (this.events.length > this._maxEvents) {
-        this.events.length = this._maxEvents;
-      }
+    relTime(iso) {
+      if (!iso) return '';
+      const then = new Date(iso);
+      const mins = Math.round((Date.now() - then.getTime()) / 60000);
+      if (mins < 60) return `${mins}m ago`;
+      const hours = Math.round(mins / 60);
+      if (hours < 24) return `${hours}h ago`;
+      return `${Math.round(hours / 24)}d ago`;
     },
 
     // ---------------------------------------------------------------- user actions
 
-    async ping() {
-      // Placeholder action. The real state change arrives over the WebSocket,
-      // so there is nothing to flip optimistically here — for a mutation that
-      // does own local state, flip it first, await, then re-sync from the
-      // response and revert on error.
-      this.pinging = true;
-      try {
-        await this._json('/events/ping', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        });
-      } catch (err) {
-        console.error('ping failed', err);
-      } finally {
-        this.pinging = false;
-      }
+    toggle(item) {
+      this.expanded = this.expanded === item.article_id ? null : item.article_id;
+    },
+
+    recordClick(item) {
+      // Interaction signals are captured but deliberately unused in ranking
+      // (spec 7.3, research finding R10). Phase 4 decides whether to trust them.
+      console.debug('click_through', item.article_id);
     },
 
     // ---------------------------------------------------------------- WebSocket
@@ -148,20 +142,34 @@ function app() {
       //   { type, subject, data, timestamp, source }
       if (!event || !event.type) return;
 
-      this._recordEvent(event);
-
       switch (event.type) {
+        case 'article_summarized': {
+          const item = event.data?.item;
+          if (!item) break;
+          const idx = this.items.findIndex(i => i.article_id === item.article_id);
+          const normalized = { score: null, rating: null, badges: [], ...item };
+          if (idx >= 0) this.items.splice(idx, 1, normalized);
+          else this.items.unshift(normalized);
+          break;
+        }
+
+        case 'source_polled':
+          this._json('/sources/').then(rows => { this.sources = rows || []; })
+            .catch(err => console.error('sources refresh', err));
+          break;
+
         case 'system_ready':
           // Server (re)started — re-pull anything cached from REST.
           this.refreshAll();
           break;
 
-        case 'system_error':
-          console.warn('system_error', event.data);
+        case 'pipeline_error':
+          console.warn('pipeline_error', event.data);
           break;
 
-        case 'state_changed':
-          // Patch the matching entity here once the UI renders real state.
+        case 'article_ingested':
+        case 'article_scored':
+        case 'profile_proposed':
           break;
 
         default:
