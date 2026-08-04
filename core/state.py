@@ -294,18 +294,36 @@ class StateStore:
         )
         await self.db.commit()
 
-    async def articles_pending(self, stage: str, limit: int = 50) -> list[int]:
-        """Article ids whose *stage* checkpoint is unset. Drives resume-on-restart."""
+    async def articles_pending(
+        self, stage: str, limit: int = 50, *, source_id: str | None = None
+    ) -> list[int]:
+        """Article ids whose *stage* checkpoint is unset. Drives resume-on-restart.
 
+        *source_id* scopes the result to one source's stranded work. A poll of
+        source A must not pick up source B's pending articles: it would fetch
+        them with A's driver and publish them to the live feed carrying A's
+        source ref, so a post would appear under the wrong publication until a
+        reload re-read the correct ``source_id`` from the row. It stays optional
+        and keyword-only so existing positional calls keep the global view and
+        cannot accidentally bind it to *limit*.
+        """
+
+        # The column name is interpolated because it is chosen from a fixed
+        # internal dict; source_id is user-controlled (it comes from
+        # sources.yaml) and is therefore always a bound parameter.
         column = {"extract": "extracted_at", "summarize": "summarized_at"}[stage]
         precondition = "" if stage == "extract" else "AND extracted_at IS NOT NULL"
+        source_clause = "AND source_id = ?" if source_id is not None else ""
+        params: tuple[object, ...] = (
+            (source_id, limit) if source_id is not None else (limit,)
+        )
         cur = await self.db.execute(
             f"""
             SELECT id FROM articles
-             WHERE {column} IS NULL {precondition}
+             WHERE {column} IS NULL {precondition} {source_clause}
              ORDER BY COALESCE(published_at, fetched_at) DESC
              LIMIT ?
             """,
-            (limit,),
+            params,
         )
         return [row["id"] for row in await cur.fetchall()]

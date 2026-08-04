@@ -108,6 +108,59 @@ async def test_record_error_does_not_clear_prior_stage(
     assert "boom" in row["last_error"]
 
 
+async def _ingest_pending_pair(store: StateStore, source_config: SourceConfig):
+    """One unextracted article for 'acx' and one for 'other'. Returns both ids."""
+    await store.upsert_source(source_config)
+    await store.upsert_source(
+        SourceConfig(id="other", type="substack", name="Other",
+                     feed_url="https://other.example/feed")
+    )
+    a = ArticleRef(source_id="acx", guid="ga",
+                   url="https://acx.substack.com/p/a", title="A")
+    b = ArticleRef(source_id="other", guid="gb",
+                   url="https://other.example/p/b", title="B")
+    return (
+        await store.ingest_article(a, a.url, NOW),
+        await store.ingest_article(b, b.url, NOW),
+    )
+
+
+async def test_articles_pending_filters_by_source(
+    store: StateStore, source_config: SourceConfig
+) -> None:
+    """Scoping exists so one source's poll never adopts another's articles."""
+    a_id, b_id = await _ingest_pending_pair(store, source_config)
+
+    assert await store.articles_pending("extract", source_id="acx") == [a_id]
+    assert await store.articles_pending("extract", source_id="other") == [b_id]
+
+
+async def test_articles_pending_without_source_id_spans_all_sources(
+    store: StateStore, source_config: SourceConfig
+) -> None:
+    """The filter is additive — the default global view is unchanged."""
+    a_id, b_id = await _ingest_pending_pair(store, source_config)
+
+    assert sorted(await store.articles_pending("extract")) == sorted([a_id, b_id])
+    # The pre-existing positional call style must keep working, and `limit`
+    # must still bind to limit rather than to the new keyword-only argument.
+    assert len(await store.articles_pending("extract", 1)) == 1
+
+
+async def test_articles_pending_summarize_respects_source_and_precondition(
+    store: StateStore, source_config: SourceConfig
+) -> None:
+    """Summarize-pending still requires extraction, and still scopes by source."""
+    a_id, b_id = await _ingest_pending_pair(store, source_config)
+    assert await store.articles_pending("summarize", source_id="acx") == []
+
+    await store.save_extraction(a_id, "text", 5, "<p/>", NOW)
+    await store.save_extraction(b_id, "text", 5, "<p/>", NOW)
+
+    assert await store.articles_pending("summarize", source_id="acx") == [a_id]
+    assert await store.articles_pending("summarize", source_id="other") == [b_id]
+
+
 async def test_due_sources_respects_next_poll_at(
     store: StateStore, source_config: SourceConfig
 ) -> None:
