@@ -67,6 +67,9 @@ class Summary(BaseModel):
     bullets: list[str] = Field(min_length=5, max_length=5)
     model: str
     prompt_version: str
+    # Validated against the configured vocabulary by the summarizer, not here:
+    # an unknown tag is dropped, never an error (spec 5.2).
+    categories: list[str] = Field(default_factory=list, max_length=5)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

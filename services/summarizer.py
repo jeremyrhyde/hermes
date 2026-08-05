@@ -25,7 +25,7 @@ from schemas.article import Article, Summary
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "summary-v1"
+PROMPT_VERSION = "summary-v2"
 
 SYSTEM_PROMPT = """\
 You summarize articles for a personal reading feed. The reader wants to decide, \
@@ -45,27 +45,67 @@ a specific claim, finding, or event from the article. Prefer concrete details \
 explains" or otherwise refer to the article's structure.
 """
 
-SUMMARY_TOOL: dict[str, Any] = {
-    "name": "emit_summary",
-    "description": "Emit the structured summary of the article.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "headline": {
-                "type": "string",
-                "description": "Plain-language framing, under 80 characters.",
-            },
-            "bullets": {
-                "type": "array",
-                "items": {"type": "string"},
-                "minItems": 5,
-                "maxItems": 5,
-                "description": "Exactly five one-sentence factual bullets.",
-            },
+# Appended only when a vocabulary is configured — with no vocabulary the tool
+# has no ``categories`` property, and instructing the model about a field it
+# cannot emit is noise.
+CATEGORY_PROMPT = """
+Assign categories only where they genuinely apply — what the article is \
+actually about, not what it mentions in passing. If nothing in the list fits, \
+omit the field entirely; that is the correct answer, not a failure. Fewer \
+accurate tags are better than more speculative ones.
+"""
+
+MAX_CATEGORIES = 5
+
+
+def build_summary_tool(vocabulary: list[str]) -> dict[str, Any]:
+    """Build the forced-use tool schema for ``vocabulary``.
+
+    Per-instance rather than a module constant because the vocabulary is
+    configuration. With an empty vocabulary the ``categories`` property is
+    omitted entirely, so a deployment that has not configured categories asks
+    the model for none.
+
+    ``categories`` is never in ``required`` and carries no ``minItems``: a
+    floor against a small vocabulary would make every article carry most tags,
+    and a model padding to meet a quota confabulates. A wrong tag is worse than
+    a missing one — it surfaces the article under a filter it does not belong to.
+    """
+    properties: dict[str, Any] = {
+        "headline": {
+            "type": "string",
+            "description": "Plain-language framing, under 80 characters.",
         },
-        "required": ["headline", "bullets"],
-    },
-}
+        "bullets": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 5,
+            "maxItems": 5,
+            "description": "Exactly five one-sentence factual bullets.",
+        },
+    }
+    if vocabulary:
+        properties["categories"] = {
+            "type": "array",
+            "items": {"type": "string", "enum": list(vocabulary)},
+            "maxItems": MAX_CATEGORIES,
+            "description": (
+                "Topic categories that genuinely apply to this article. "
+                "Assign only what the article is actually about — omit the field "
+                "entirely rather than guessing. Fewer accurate tags are better than "
+                "more speculative ones."
+            ),
+        }
+
+    return {
+        "name": "emit_summary",
+        "description": "Emit the structured summary of the article.",
+        "input_schema": {
+            "type": "object",
+            "properties": properties,
+            "required": ["headline", "bullets"],
+        },
+    }
 
 
 class SummarizationError(RuntimeError):
@@ -85,10 +125,17 @@ class ClaudeSummarizer:
         *,
         model: str,
         max_input_chars: int = 60_000,
+        vocabulary: list[str] | None = None,
     ) -> None:
         self._client = client
         self._model = model
         self._max_input_chars = max_input_chars
+        self._vocabulary = list(vocabulary or [])
+        self._allowed = set(self._vocabulary)
+        self._tool = build_summary_tool(self._vocabulary)
+        self._system_prompt = SYSTEM_PROMPT + (
+            CATEGORY_PROMPT if self._vocabulary else ""
+        )
 
     async def summarize(self, article: Article) -> Summary:
         text = (article.text or "").strip()
@@ -114,8 +161,8 @@ class ClaudeSummarizer:
             response = await self._client.messages.create(
                 model=self._model,
                 max_tokens=1024,
-                system=SYSTEM_PROMPT,
-                tools=[SUMMARY_TOOL],
+                system=self._system_prompt,
+                tools=[self._tool],
                 tool_choice={"type": "tool", "name": "emit_summary"},
                 messages=[{"role": "user", "content": user_content}],
             )
@@ -137,7 +184,30 @@ class ClaudeSummarizer:
             bullets=bullets,
             model=self._model,
             prompt_version=PROMPT_VERSION,
+            categories=self._clean_categories(payload.get("categories"), article.id),
         )
+
+    def _clean_categories(self, raw: Any, article_id: int) -> list[str]:
+        """Normalize returned tags, dropping anything outside the vocabulary.
+
+        The schema ``enum`` is a hint the API does not enforce, so the check
+        happens here — the same reason the five-bullet count is re-checked in
+        Python. A bad tag is dropped and logged, never raised: the bullets are
+        the product and must survive a hallucinated category. A rising drop
+        rate is the signal that the vocabulary or the prompt needs work.
+        """
+        cleaned: list[str] = []
+        for value in raw or []:
+            category = str(value).strip().lower()
+            if category not in self._allowed:
+                logger.info(
+                    "summarizer: article %d dropping category outside vocabulary: %r",
+                    article_id, value,
+                )
+                continue
+            if category not in cleaned:
+                cleaned.append(category)
+        return cleaned[:MAX_CATEGORIES]
 
     @staticmethod
     def _extract_tool_input(response: Any, article_id: int) -> dict[str, Any]:
