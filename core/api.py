@@ -36,6 +36,7 @@ from fastapi import (
     APIRouter,
     FastAPI,
     HTTPException,
+    Query,
     Request,
     WebSocket,
     WebSocketDisconnect,
@@ -82,6 +83,54 @@ def _store(request: Request) -> "StateStore":
     return request.app.state.state_store  # type: ignore[no-any-return]
 
 
+def _vocabulary(request: Request) -> list[str]:
+    return request.app.state.category_vocabulary  # type: ignore[no-any-return]
+
+
+def _category_filters(request: Request) -> list[str]:
+    return request.app.state.category_filters  # type: ignore[no-any-return]
+
+
+def _selected_categories(
+    request: Request, category: list[str] | None
+) -> list[str]:
+    """Normalize and validate the repeated ``?category=`` query parameter.
+
+    Values are lowercased and de-duplicated (first occurrence wins, so the
+    order the user clicked in survives). The de-duplication is load-bearing,
+    not cosmetic: the store's AND filter binds
+    ``COUNT(DISTINCT category) = len(categories)``, so a repeated value —
+    ``?category=AI&category=ai``, one double-clicked filter button — would ask
+    for a count that ``IN ('ai', 'ai')`` can never reach and silently return
+    nothing.
+
+    Validation is against the *vocabulary*, not ``filters``: ``filters`` only
+    controls which buttons the UI draws, while tagged data exists for the whole
+    vocabulary. An unrecognized value is a 400 naming the valid ones rather
+    than a silent drop, because a dropped filter renders an unexplained empty
+    feed that looks exactly like a broken deploy.
+    """
+
+    if not category:
+        return []
+
+    vocabulary = _vocabulary(request)
+    selected: list[str] = []
+    for raw in category:
+        name = raw.strip().lower()
+        if not name:  # ``?category=`` — an empty widget, not a selection
+            continue
+        if name not in vocabulary:
+            valid = ", ".join(vocabulary) or "(none configured)"
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"unknown category {name!r}; valid categories: {valid}",
+            )
+        if name not in selected:
+            selected.append(name)
+    return selected
+
+
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
@@ -92,7 +141,10 @@ def _build_feed_router() -> APIRouter:
 
     @router.get("/", response_model=list[FeedItem])
     async def list_feed(
-        request: Request, limit: int = 50, offset: int = 0
+        request: Request,
+        limit: int = 50,
+        offset: int = 0,
+        category: list[str] | None = Query(default=None),
     ) -> list[FeedItem]:
         """The rendered feed, newest first.
 
@@ -101,9 +153,15 @@ def _build_feed_router() -> APIRouter:
         format — badges, read state, per-item actions — free to evolve without
         dragging the storage schema along with it, and lets source identity be
         denormalized into every card.
+
+        Repeated ``?category=`` values narrow the feed to articles carrying
+        **all** of them (AND semantics).
         """
 
-        rows = await _store(request).feed_items(limit=limit, offset=offset)
+        categories = _selected_categories(request, category)
+        rows = await _store(request).feed_items(
+            limit=limit, offset=offset, categories=categories
+        )
         return [
             FeedItem(
                 article_id=row["article_id"],
@@ -118,9 +176,50 @@ def _build_feed_router() -> APIRouter:
                 ),
                 score=row["score"],
                 rating=row["rating"],
+                categories=row["categories"],
             )
             for row in rows
         ]
+
+    return router
+
+
+def _build_categories_router() -> APIRouter:
+    router = APIRouter(prefix="/categories", tags=["categories"])
+
+    @router.get("/")
+    async def list_categories(
+        request: Request, category: list[str] | None = Query(default=None)
+    ) -> dict[str, Any]:
+        """The filter row: one entry per configured filter, with its count.
+
+        Only the configured ``filters`` are returned (spec section 6.1) — the
+        wider vocabulary is what Claude may assign, not what the UI offers, so
+        exposing it here would invite buttons nobody asked for. An unconfigured
+        app returns an empty row rather than 404.
+
+        Counts are contextual: each is how many articles would remain if that
+        filter were *also* selected, so a dead-end combination can render
+        disabled instead of being discovered by clicking it.
+        """
+
+        selected = _selected_categories(request, category)
+        filters = _category_filters(request)
+        if not filters:
+            return {"selected": selected, "filters": []}
+
+        counts = await _store(request).category_counts(filters, selected=selected)
+        return {
+            "selected": selected,
+            "filters": [
+                {
+                    "category": name,
+                    "count": counts[name],
+                    "selected": name in selected,
+                }
+                for name in filters
+            ],
+        }
 
     return router
 
@@ -213,6 +312,8 @@ def create_app(
     state_store: "StateStore | None" = None,
     poller: Any = None,
     settings: "Settings | None" = None,
+    category_vocabulary: list[str] | None = None,
+    category_filters: list[str] | None = None,
     mount_static: bool = True,
 ) -> FastAPI:
     """Build and wire a :class:`FastAPI` instance.
@@ -227,11 +328,17 @@ def create_app(
             rather than driving a pipeline with no summarizer.
         settings: Application settings; used to locate ``WEB_DIR`` for the
             static mount. May be ``None`` in tests.
+        category_vocabulary: Every category Claude may assign — what the
+            ``?category=`` query parameter validates against.
+        category_filters: The subset the UI offers as buttons, in display
+            order. Empty means categories are unconfigured, and
+            ``GET /categories/`` returns an empty filter row.
         mount_static: If ``False``, skip the static-file mount entirely.
             Tests pass ``False`` to keep the app hermetic.
 
     The returned app has the wired components on ``app.state``:
-    ``event_bus``, ``ws_manager``, ``state_store``, ``poller``, ``settings``.
+    ``event_bus``, ``ws_manager``, ``state_store``, ``poller``, ``settings``,
+    ``category_vocabulary``, ``category_filters``.
 
     As new components arrive (a state store, a scheduler, service clients),
     add them as keyword-only args here and assign them onto ``app.state``
@@ -249,8 +356,11 @@ def create_app(
     app.state.state_store = state_store
     app.state.poller = poller
     app.state.settings = settings
+    app.state.category_vocabulary = category_vocabulary or []
+    app.state.category_filters = category_filters or []
 
     app.include_router(_build_feed_router())
+    app.include_router(_build_categories_router())
     app.include_router(_build_sources_router())
     app.include_router(_build_ws_router())
 

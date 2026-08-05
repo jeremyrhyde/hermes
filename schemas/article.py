@@ -119,3 +119,6 @@ class FeedItem(BaseModel):
     score: int | None = None
     rating: int | None = None
     badges: list[str] = Field(default_factory=list)
+    # Every category the article carries, not just the ones being filtered on —
+    # the UI needs the full set to decide whether a live-arriving card belongs.
+    categories: list[str] = Field(default_factory=list)
