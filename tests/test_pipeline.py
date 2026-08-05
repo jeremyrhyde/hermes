@@ -49,6 +49,7 @@ class StubSummarizer:
         return Summary(
             headline=f"H{article.id}", bullets=["a"] * 5,
             model="stub", prompt_version="v1",
+            categories=["ai-safety", "economics"],
         )
 
 
@@ -288,3 +289,23 @@ async def test_publishes_events(store: StateStore) -> None:
     kinds = [e.type for e in seen]
     assert EventType.ARTICLE_INGESTED in kinds
     assert EventType.ARTICLE_SUMMARIZED in kinds
+
+
+async def test_summarized_event_carries_categories(store: StateStore) -> None:
+    """The live-update filtering path needs the full category set on arrival
+    (schemas/article.py FeedItem.categories) or an active filter drops every
+    freshly-summarized article until the next manual refresh."""
+    seen: list[Event] = []
+
+    async def collect(event: Event) -> None:
+        seen.append(event)
+
+    bus = EventBus()
+    bus.subscribe(EventType.ARTICLE_SUMMARIZED, collect)
+
+    await store.upsert_source(CFG)
+    pipeline = await _pipeline(store, StubDriver(_refs(1)), StubSummarizer(), bus)
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert len(seen) == 1
+    assert seen[0].data["item"]["categories"] == ["ai-safety", "economics"]

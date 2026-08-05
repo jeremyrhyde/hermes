@@ -242,6 +242,7 @@ class Pipeline:
                     "article_id": article_id,
                     "headline": summary.headline,
                     "bullets": summary.bullets,
+                    "categories": summary.categories,
                     "url": article.canonical_url,
                     "published_at": row["published_at"],
                     "source": source.to_ref().model_dump(mode="json"),
