@@ -46,3 +46,90 @@ async def test_metadata_columns_exist_from_migration_001(tmp_path) -> None:
         cur = await db.execute("PRAGMA table_info(scores)")
         cols = {row[1] for row in await cur.fetchall()}
         assert "signals" in cols, "scores is missing signals (spec 12.4)"
+
+
+async def test_runner_skips_already_applied_migrations(tmp_path) -> None:
+    """The version filter must actually skip — not rely on IF NOT EXISTS.
+
+    Phase 1's migrations are all idempotent by construction, so a broken
+    version filter is invisible. This uses a deliberately NON-idempotent
+    migration: re-running it raises. If the filter regresses, this fails.
+    """
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    (migrations / "001_only.sql").write_text(
+        "CREATE TABLE widget (id INTEGER PRIMARY KEY);", encoding="utf-8"
+    )
+
+    async with aiosqlite.connect(tmp_path / "t.db") as db:
+        first = await apply_migrations(db, migrations)
+        # A second run must not re-execute 001. CREATE TABLE without
+        # IF NOT EXISTS raises on the second attempt, so a broken filter
+        # surfaces as OperationalError rather than a silent no-op.
+        second = await apply_migrations(db, migrations)
+
+    assert first == second == 1
+
+
+async def test_runner_applies_only_pending_migrations(tmp_path) -> None:
+    """Adding 002 later applies 002 alone, without re-touching 001.
+
+    001 deliberately has no IF NOT EXISTS (same trick as the test above):
+    if the version filter regresses and re-applies 001 alongside 002, the
+    second apply_migrations call raises instead of silently double-running.
+    Adding IF NOT EXISTS here would make this test pass even with a broken
+    filter, defeating the point.
+    """
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    (migrations / "001_only.sql").write_text(
+        "CREATE TABLE widget (id INTEGER PRIMARY KEY);", encoding="utf-8"
+    )
+
+    db_path = tmp_path / "t.db"
+    async with aiosqlite.connect(db_path) as db:
+        assert await apply_migrations(db, migrations) == 1
+
+    # 002 lands after 001 has already run — the realistic upgrade path.
+    (migrations / "002_more.sql").write_text(
+        "CREATE TABLE gadget (id INTEGER PRIMARY KEY);", encoding="utf-8"
+    )
+
+    async with aiosqlite.connect(db_path) as db:
+        assert await apply_migrations(db, migrations) == 2
+        cur = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+        names = {row[0] for row in await cur.fetchall()}
+
+    assert {"widget", "gadget"} <= names
+
+
+async def test_runner_applies_pending_migrations_in_order(tmp_path) -> None:
+    """001 and 002 pending simultaneously must run 001 before 002.
+
+    This is the fresh-install / `rm hermes.db` path: every pending migration
+    applies in a single pass, so ordering between them is never exercised by
+    the other tests here (test 1 has only one file; test 2 applies 001 and
+    002 in two separate passes, never together). 002 uses ALTER TABLE ...
+    ADD COLUMN against a table 001 creates — SQLite has no IF NOT EXISTS for
+    ALTER TABLE ADD COLUMN, so this is deliberately non-idempotent and
+    order-dependent: under reverse order it fails with "no such table:
+    widget" rather than passing by accident.
+    """
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    (migrations / "001_widget.sql").write_text(
+        "CREATE TABLE widget (id INTEGER PRIMARY KEY);", encoding="utf-8"
+    )
+    (migrations / "002_add_column.sql").write_text(
+        "ALTER TABLE widget ADD COLUMN label TEXT;", encoding="utf-8"
+    )
+
+    async with aiosqlite.connect(tmp_path / "t.db") as db:
+        version = await apply_migrations(db, migrations)
+        cur = await db.execute("PRAGMA table_info(widget)")
+        cols = {row[1] for row in await cur.fetchall()}
+
+    assert version == 2
+    assert "label" in cols
