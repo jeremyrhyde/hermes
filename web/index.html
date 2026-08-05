@@ -52,6 +52,27 @@
             @click="tab = 'sources'">Sources</button>
   </nav>
 
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Category filters — Feed tab only, and only when the API offers any. -->
+  <!-- A zero-count filter is disabled, never hidden: a button vanishing   -->
+  <!-- mid-interaction reads as a bug. A selected one stays clickable so   -->
+  <!-- the selection is always reversible.                                 -->
+  <!-- ------------------------------------------------------------------ -->
+  <div class="filter-bar" x-show="tab === 'feed' && categoryFilters.length > 0">
+    <div class="filter-row" role="group" aria-label="Filter by category">
+      <template x-for="f in categoryFilters" :key="f.category">
+        <button type="button" class="chip"
+                :class="{ active: f.selected }"
+                :disabled="!f.selected && f.count === 0"
+                :aria-pressed="f.selected"
+                @click="toggleCategory(f.category)"
+                x-text="`${f.category} (${f.count})`"></button>
+      </template>
+      <button type="button" class="chip chip-clear" x-show="selected.length > 0"
+              @click="clearCategories()">clear</button>
+    </div>
+  </div>
+
   <main>
     <!-- Startup-failure banner, populated from /health -->
     <template x-if="bootFailures.length > 0">
@@ -79,10 +100,20 @@
         <button class="btn btn-quiet" @click="refreshAll()">Refresh</button>
       </div>
 
-      <template x-if="items.length === 0">
+      <!-- Two distinct empty states. "Nothing yet" is about an empty
+           database; a filtered miss means the user has articles, just none
+           matching, and needs a way back rather than setup instructions. -->
+      <template x-if="items.length === 0 && selected.length === 0">
         <p class="empty">
           Nothing yet. Add feeds to <code>sources.yaml</code>, then
           <code>make poll-now ID=&lt;source-id&gt;</code>.
+        </p>
+      </template>
+
+      <template x-if="items.length === 0 && selected.length > 0">
+        <p class="empty">
+          <span x-text="`No articles match all ${selected.length} filter${selected.length === 1 ? '' : 's'}.`"></span>
+          <button type="button" class="btn btn-quiet" @click="clearCategories()">Clear filters</button>
         </p>
       </template>
 

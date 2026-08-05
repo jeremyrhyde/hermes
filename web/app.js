@@ -15,6 +15,13 @@ function app() {
     tab: 'feed',
     items: [],
     sources: [],
+    // One entry per *configured* filter, including zero counts — a dead-end
+    // category is rendered disabled rather than vanishing mid-interaction.
+    // Empty when categories are unconfigured, which hides the row entirely.
+    categoryFilters: [],
+    // Active selection, AND-combined. Alpine state only: deliberately not
+    // persisted, so a reload always lands on the unfiltered feed.
+    selected: [],
     expanded: null,
     wsConnected: false,
     bootFailures: [],
@@ -25,6 +32,11 @@ function app() {
     _backoff: 1000,
     _maxBackoff: 30000,
     _clockTimer: null,
+    // Guards the selection-dependent state (items, categoryFilters) against
+    // out-of-order responses: click two filters quickly and the first pair of
+    // fetches can resolve after the second, leaving counts that contradict
+    // the selection. Only the newest generation is allowed to write.
+    _filterSeq: 0,
 
     // ---------------------------------------------------------------- lifecycle
     async init() {
@@ -37,14 +49,26 @@ function app() {
     async refreshAll() {
       // Parallel fetch so one failing endpoint doesn't blank the rest of the
       // page. Add new endpoints to this array as the API grows.
-      const [feed, sources, health] = await Promise.allSettled([
-        this._json('/feed/?limit=100'),
+      const seq = ++this._filterSeq;
+      const [feed, categories, sources, health] = await Promise.allSettled([
+        this._json(`/feed/?limit=100${this._categoryQuery()}`),
+        this._json(`/categories/${this._categoryQuery('?')}`),
         this._json('/sources/'),
         this._json('/health'),
       ]);
 
-      if (feed.status === 'fulfilled') this.items = feed.value || [];
-      else console.error('refreshAll: /feed/', feed.reason);
+      // Sources and health don't depend on the selection, so they apply even
+      // if a newer filter request has superseded this one.
+      if (seq === this._filterSeq) {
+        if (feed.status === 'fulfilled') this.items = feed.value || [];
+        else console.error('refreshAll: /feed/', feed.reason);
+
+        if (categories.status === 'fulfilled') {
+          this.categoryFilters = categories.value?.filters || [];
+        } else {
+          console.error('refreshAll: /categories/', categories.reason);
+        }
+      }
 
       if (sources.status === 'fulfilled') this.sources = sources.value || [];
       else console.error('refreshAll: /sources/', sources.reason);
@@ -56,6 +80,26 @@ function app() {
       }
     },
 
+    /* Refetch the two endpoints the selection parameterizes. Sources and
+     * health don't vary with it, so a filter click leaves them alone. */
+    async refreshFiltered() {
+      const seq = ++this._filterSeq;
+      const [feed, categories] = await Promise.allSettled([
+        this._json(`/feed/?limit=100${this._categoryQuery()}`),
+        this._json(`/categories/${this._categoryQuery('?')}`),
+      ]);
+      if (seq !== this._filterSeq) return;  // superseded by a later click
+
+      if (feed.status === 'fulfilled') this.items = feed.value || [];
+      else console.error('refreshFiltered: /feed/', feed.reason);
+
+      if (categories.status === 'fulfilled') {
+        this.categoryFilters = categories.value?.filters || [];
+      } else {
+        console.error('refreshFiltered: /categories/', categories.reason);
+      }
+    },
+
     // ---------------------------------------------------------------- helpers
     async _json(path, opts = {}) {
       const res = await fetch(path, opts);
@@ -63,6 +107,16 @@ function app() {
       // 204 No Content has no body
       if (res.status === 204) return null;
       return res.json();
+    },
+
+    /* Repeated ?category= params for the active selection, or '' when nothing
+     * is selected. *lead* is the separator for the first param: '?' when the
+     * path has no query string yet, '&' (the default) when it already does. */
+    _categoryQuery(lead = '&') {
+      if (this.selected.length === 0) return '';
+      const params = new URLSearchParams();
+      for (const name of this.selected) params.append('category', name);
+      return lead + params.toString();
     },
 
     _tickClock() {
@@ -85,6 +139,26 @@ function app() {
     },
 
     // ---------------------------------------------------------------- user actions
+
+    toggleCategory(name) {
+      const idx = this.selected.indexOf(name);
+      if (idx >= 0) this.selected.splice(idx, 1);
+      else this.selected.push(name);
+      return this.refreshFiltered();
+    },
+
+    clearCategories() {
+      this.selected = [];
+      return this.refreshFiltered();
+    },
+
+    /* AND semantics: the article must carry *every* active filter, not any of
+     * them. Used to decide whether a live-arriving card belongs in the
+     * current view. An untagged article satisfies only the empty selection. */
+    matchesSelection(item) {
+      const categories = item?.categories || [];
+      return this.selected.every(name => categories.includes(name));
+    },
 
     toggle(item) {
       this.expanded = this.expanded === item.article_id ? null : item.article_id;
@@ -131,6 +205,16 @@ function app() {
       };
     },
 
+    _refreshCounts() {
+      const seq = this._filterSeq;
+      return this._json(`/categories/${this._categoryQuery('?')}`)
+        .then(data => {
+          if (seq !== this._filterSeq) return;  // selection moved on
+          this.categoryFilters = data?.filters || [];
+        })
+        .catch(err => console.error('counts refresh', err));
+    },
+
     _scheduleReconnect() {
       const delay = Math.min(this._backoff, this._maxBackoff);
       setTimeout(() => this.connectWebSocket(), delay);
@@ -146,10 +230,20 @@ function app() {
         case 'article_summarized': {
           const item = event.data?.item;
           if (!item) break;
+          const normalized = {
+            score: null, rating: null, badges: [], categories: [], ...item,
+          };
           const idx = this.items.findIndex(i => i.article_id === item.article_id);
-          const normalized = { score: null, rating: null, badges: [], ...item };
-          if (idx >= 0) this.items.splice(idx, 1, normalized);
-          else this.items.unshift(normalized);
+          if (this.matchesSelection(normalized)) {
+            if (idx >= 0) this.items.splice(idx, 1, normalized);
+            else this.items.unshift(normalized);
+          } else if (idx >= 0) {
+            // Was visible, no longer matches — drop it rather than leave a
+            // stale card in a filtered view.
+            this.items.splice(idx, 1);
+          }
+          // Counts shift even when the article itself is filtered out.
+          this._refreshCounts();
           break;
         }
 
