@@ -55,10 +55,19 @@ logger = logging.getLogger(__name__)
 async def _build_components(
     settings: Settings,
     http: httpx.AsyncClient,
-) -> tuple[EventBus, WebSocketManager, StateStore, Poller, list[dict[str, Any]]]:
+) -> tuple[
+    EventBus,
+    WebSocketManager,
+    StateStore,
+    Poller,
+    list[str],
+    list[str],
+    list[dict[str, Any]],
+]:
     """Build and wire every runtime component.
 
-    Returns the components plus a list of startup failures for ``/health``.
+    Returns the components, the category vocabulary and filter list read from
+    the sources config, plus a list of startup failures for ``/health``.
     A failure dict has the shape ``{"component": str, "error": str}``.
 
     A component that fails to construct is appended to ``failures`` and logged
@@ -86,20 +95,47 @@ async def _build_components(
     #
     # A malformed sources.yaml (bad YAML syntax, or a shape that fails
     # validation) must not kill the process: the operator gets a running
-    # server telling them what is wrong at /health, not a dead one.
+    # server telling them what is wrong at /health, not a dead one. The same
+    # holds for a categories block whose filters are not all in the
+    # vocabulary — load_sources_config raises for that from inside this call.
     try:
-        sources = load_sources_config(settings.SOURCES_CONFIG_PATH).sources
+        config = load_sources_config(settings.SOURCES_CONFIG_PATH)
+        sources = config.sources
+        vocabulary = config.categories.vocabulary
+        filters = config.categories.filters
     except Exception as exc:
-        failures.append({
-            "component": "sources_config",
-            "error": f"could not load {settings.SOURCES_CONFIG_PATH}: "
-                     f"{type(exc).__name__}: {exc}",
-        })
-        logger.exception(
-            "main: could not load sources config %s — booting with no sources",
-            settings.SOURCES_CONFIG_PATH,
-        )
+        # The category check raises a bare ValueError; every other failure
+        # mode here arrives as a YAMLError, an OSError, or pydantic's
+        # ValidationError. The type check must be exact — ValidationError
+        # subclasses ValueError, so isinstance would mislabel it.
+        is_category_error = type(exc) is ValueError
+        if is_category_error:
+            failures.append({
+                "component": "categories_config",
+                "error": f"invalid categories block in "
+                         f"{settings.SOURCES_CONFIG_PATH}: {exc}",
+            })
+            logger.exception(
+                "main: invalid categories block in %s — booting with "
+                "categories disabled",
+                settings.SOURCES_CONFIG_PATH,
+            )
+        else:
+            failures.append({
+                "component": "sources_config",
+                "error": f"could not load {settings.SOURCES_CONFIG_PATH}: "
+                         f"{type(exc).__name__}: {exc}",
+            })
+            logger.exception(
+                "main: could not load sources config %s — booting with no sources",
+                settings.SOURCES_CONFIG_PATH,
+            )
+        # Whatever went wrong, nothing from the file is trustworthy: no
+        # sources, and both category lists empty so the summarizer tags
+        # nothing and the UI shows no filter row.
         sources = []
+        vocabulary = []
+        filters = []
 
     if not sources:
         logger.warning(
@@ -128,6 +164,7 @@ async def _build_components(
             AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY),
             model=settings.SUMMARY_MODEL,
             max_input_chars=settings.SUMMARY_MAX_INPUT_CHARS,
+            vocabulary=vocabulary,
         )
 
     # WebSocket manager — subscribes itself to the bus, so anything published
@@ -151,7 +188,7 @@ async def _build_components(
     if summarizer is not None:
         await poller.start()
 
-    return bus, ws_manager, store, poller, failures
+    return bus, ws_manager, store, poller, vocabulary, filters, failures
 
 
 def _make_lifespan(settings: Settings):
@@ -167,9 +204,15 @@ def _make_lifespan(settings: Settings):
         # ``async with`` binds its lifetime to the lifespan scope, so it is
         # closed even if _build_components raises part-way through startup.
         async with httpx.AsyncClient(timeout=30.0) as http:
-            bus, ws_manager, store, poller, failures = await _build_components(
-                settings, http
-            )
+            (
+                bus,
+                ws_manager,
+                store,
+                poller,
+                vocabulary,
+                filters,
+                failures,
+            ) = await _build_components(settings, http)
 
             # Wire components onto app.state so endpoints + /health can read
             # them.
@@ -182,6 +225,11 @@ def _make_lifespan(settings: Settings):
             # summarizer is None. Exposing None makes that route return 503.
             app.state.poller = poller if poller.is_running else None
             app.state.settings = settings
+            # Categories come from the config file, which is only read here —
+            # create_app runs at import time, before any I/O has happened, so
+            # it seeds both lists to [] and the lifespan fills them in.
+            app.state.category_vocabulary = vocabulary
+            app.state.category_filters = filters
             app.state.startup_failures = failures
 
             logger.info("main: ready — %d startup failure(s)", len(failures))
