@@ -47,7 +47,7 @@ class FakeClient:
 
 def _ok_response(
     bullets: list[str] | None = None,
-    categories: list[str] | None = None,
+    categories: Any = None,
 ) -> FakeResponse:
     payload: dict[str, Any] = {
         "headline": "A tidy headline",
@@ -176,6 +176,18 @@ async def test_unknown_categories_are_dropped_not_stored() -> None:
 async def test_a_bad_category_does_not_fail_the_summary() -> None:
     """Bullets are the product; tags are an affordance."""
     client = FakeClient(_ok_response(categories=["nope", "also-nope"]))
+    summary = await ClaudeSummarizer(
+        client, model="m", vocabulary=VOCAB
+    ).summarize(make_article(text="B"))
+
+    assert summary.categories == []
+    assert len(summary.bullets) == 5
+    assert summary.headline == "A tidy headline"
+
+
+async def test_a_malformed_categories_field_does_not_fail_the_summary() -> None:
+    """A scalar where a list belongs is unusable, not fatal."""
+    client = FakeClient(_ok_response(categories=42))
     summary = await ClaudeSummarizer(
         client, model="m", vocabulary=VOCAB
     ).summarize(make_article(text="B"))

@@ -195,9 +195,23 @@ class ClaudeSummarizer:
         Python. A bad tag is dropped and logged, never raised: the bullets are
         the product and must survive a hallucinated category. A rising drop
         rate is the signal that the vocabulary or the prompt needs work.
+
+        A malformed field — anything that is not a list, including a bare
+        scalar — is the same signal and gets the same treatment. Iterating it
+        would raise (or, for a string, silently yield characters), and no shape
+        of tag is allowed to cost the article its bullets.
         """
+        if raw is None:
+            return []
+        if not isinstance(raw, list):
+            logger.info(
+                "summarizer: article %d ignoring malformed categories field: %r",
+                article_id, raw,
+            )
+            return []
+
         cleaned: list[str] = []
-        for value in raw or []:
+        for value in raw:
             category = str(value).strip().lower()
             if category not in self._allowed:
                 logger.info(
