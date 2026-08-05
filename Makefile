@@ -36,12 +36,14 @@ help:
 	@echo ""
 	@echo "Tests:"
 	@echo "  make test           Run the pytest suite"
-	@echo "  make health         curl the /health endpoint (server must be up)"
-	@echo "  make ping           POST /events/ping — should flash in the open UI"
+	@echo "  make health         curl /health"
+	@echo "  make sources        list configured sources and their health"
+	@echo "  make feed           print the 10 most recent feed items"
+	@echo "  make poll-now ID=x  force an immediate poll of one source"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make run-dev PORT=9000"
-	@echo "  make ping HERMES_HOST=http://192.168.1.50:8000"
+	@echo "  make poll-now ID=astralcodexten"
 
 # ---------------------------------------------------------------------------
 # Setup / build
@@ -101,11 +103,25 @@ test:
 # ---------------------------------------------------------------------------
 
 HERMES_HOST ?= http://localhost:8000
+ID ?=
 
 .PHONY: health
 health:
 	@curl -sS $(HERMES_HOST)/health && echo ""
 
-.PHONY: ping
-ping:
-	@curl -sS -X POST $(HERMES_HOST)/events/ping && echo ""
+.PHONY: feed
+feed:
+	@curl -sS "$(HERMES_HOST)/feed/?limit=10" | python3 -m json.tool
+
+.PHONY: sources
+sources:
+	@curl -sS $(HERMES_HOST)/sources/ | python3 -m json.tool
+
+.PHONY: poll-now
+poll-now:
+	@if [ -z "$(ID)" ]; then \
+		echo "ERROR: pass ID=<source-id>"; \
+		echo "  List them with: make sources"; \
+		exit 1; \
+	fi
+	@curl -sS -X POST $(HERMES_HOST)/sources/$(ID)/poll && echo ""

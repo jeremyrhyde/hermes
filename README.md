@@ -3,10 +3,9 @@
 A FastAPI core that serves a no-build web UI, wired together by an in-process
 event bus with WebSocket push to the browser.
 
-This is scaffolding. The plumbing is real and runnable; the domain logic is
-not written yet — `services/` is empty and there is one placeholder endpoint
-(`POST /events/ping`) that exists only to prove the event → WebSocket → UI
-path works end to end.
+The server boots, polls sources on an adaptive schedule, summarizes new
+articles via Claude, and serves a live web UI over the event bus described
+above.
 
 ## What this is becoming
 
@@ -44,8 +43,22 @@ With the server up and the UI open, from a second terminal:
 
 ```bash
 make health      # GET  /health
-make ping        # POST /events/ping — appears in the UI's Events tab instantly
+make sources     # configured sources + their poll health
+make feed        # 10 most recent summarized articles
+make poll-now ID=astralcodexten   # force one source to poll immediately
 ```
+
+## Setup
+
+1. `cp sources.yaml.example sources.yaml` and list the feeds you follow.
+2. `cp .env.example .env` and set `ANTHROPIC_API_KEY`. Without it the server
+   still boots, but the poller never starts — nothing is ingested or
+   summarized, `POST /sources/{id}/poll` (and `make poll-now`) returns 503,
+   and `/health` reports the startup failure.
+3. `make run`, then open <http://localhost:8000/ui/>.
+
+The poller wakes every 60s and polls each source on its own adaptive schedule
+(15 min–4 h). To see something immediately, use `make poll-now ID=<source-id>`.
 
 ## Layout
 
@@ -57,7 +70,7 @@ make ping        # POST /events/ping — appears in the UI's Events tab instantl
 | `core/events.py` | `EventBus` — async pub/sub, the seam between components |
 | `core/websocket.py` | `WebSocketManager` — connection set + broadcast fan-out |
 | `schemas/` | Pydantic models. No I/O, no imports from `core`/`services` |
-| `services/` | Domain logic. Empty — this is where the real work goes |
+| `services/` | Feed domain: source drivers, extraction, summarizer, pipeline, poller |
 | `web/` | The UI: `index.html`, `style.css`, `app.js`. No build step |
 | `tests/` | pytest suite against a hermetic app |
 

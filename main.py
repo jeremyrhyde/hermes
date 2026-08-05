@@ -116,10 +116,12 @@ async def _build_components(
     if not settings.ANTHROPIC_API_KEY:
         failures.append({
             "component": "summarizer",
-            "error": "ANTHROPIC_API_KEY is not set; articles will be ingested "
-                     "but not summarized",
+            "error": "ANTHROPIC_API_KEY is not set; polling is disabled, so "
+                     "nothing is ingested or summarized",
         })
-        logger.error("main: ANTHROPIC_API_KEY is not set — summarization disabled")
+        logger.error(
+            "main: ANTHROPIC_API_KEY is not set — polling and summarization disabled"
+        )
         summarizer = None
     else:
         summarizer = ClaudeSummarizer(

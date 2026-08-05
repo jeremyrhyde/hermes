@@ -36,8 +36,9 @@ class Settings(BaseSettings):
             file yields an empty source list rather than an error, so the
             server boots unconfigured. Default ``"./sources.yaml"``.
         ANTHROPIC_API_KEY: Key used for summarization. Empty by default; if
-            unset, the server still boots and ingests articles but does not
-            summarize, and reports the failure at ``/health``.
+            unset, the server still boots but the poller never starts, so
+            nothing is ingested or summarized, and the failure is reported
+            at ``/health``.
         SUMMARY_MODEL: Model used for summarization. Default
             ``"claude-haiku-4-5"``.
         SUMMARY_MAX_INPUT_CHARS: Articles longer than this are truncated
