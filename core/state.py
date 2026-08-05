@@ -283,6 +283,15 @@ class StateStore:
         tags. The summarizer has already lowercased, de-duplicated, capped, and
         validated them against the configured vocabulary (spec 5.2), so they are
         stored verbatim.
+
+        The ``summarized_at`` checkpoint is written LAST, after the categories.
+        There is no rollback here, and the pipeline's error handler commits on
+        this same connection, so a failure part-way through still lands what ran
+        before it. Setting the checkpoint before the tag write would therefore
+        strand a half-written article: ``articles_pending("summarize")`` keys on
+        ``summarized_at IS NULL`` and would never retry it. In this order a
+        failure leaves the checkpoint NULL and the next pass heals the row
+        through the ``ON CONFLICT`` upsert above.
         """
 
         import json
@@ -307,14 +316,6 @@ class StateStore:
             ),
         )
         await self.db.execute(
-            """
-            UPDATE articles
-               SET summarized_at = ?, last_error = NULL, error_stage = NULL
-             WHERE id = ?
-            """,
-            (iso(summarized_at), article_id),
-        )
-        await self.db.execute(
             "DELETE FROM article_categories WHERE article_id = ?", (article_id,)
         )
         if summary.categories:
@@ -322,6 +323,14 @@ class StateStore:
                 "INSERT INTO article_categories (article_id, category) VALUES (?, ?)",
                 [(article_id, category) for category in summary.categories],
             )
+        await self.db.execute(
+            """
+            UPDATE articles
+               SET summarized_at = ?, last_error = NULL, error_stage = NULL
+             WHERE id = ?
+            """,
+            (iso(summarized_at), article_id),
+        )
         await self.db.commit()
 
     async def record_article_error(

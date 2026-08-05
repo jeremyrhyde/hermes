@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timezone
+
+import pytest
 
 from core.state import StateStore
 from schemas.article import ArticleRef, Summary
@@ -49,6 +52,38 @@ async def test_resummarizing_replaces_rather_than_accumulates(store: StateStore)
     cur = await store.db.execute("SELECT COUNT(*) AS n FROM article_categories")
     assert (await cur.fetchone())["n"] == 1
     assert (await store.feed_items())[0]["categories"] == ["robotics"]
+
+
+async def test_failed_category_write_leaves_the_article_retryable(
+    store: StateStore,
+) -> None:
+    """The summarize checkpoint must not outlive a failed tag write.
+
+    A duplicate category violates ``PRIMARY KEY (article_id, category)``, which
+    aborts save_summary before its commit. The pipeline then calls
+    record_article_error, whose own commit lands whatever the aborted call had
+    already written to the shared connection. So ``summarized_at`` must not be
+    among it: articles_pending("summarize") keys on it being NULL, and an
+    article that sets it without its categories would never be retried.
+    """
+    await store.upsert_source(CFG)
+    ref = ArticleRef(source_id="acx", guid="g0", url="https://acx.example/p/0",
+                     title="doomed", published_at=NOW)
+    article_id = await store.ingest_article(ref, ref.url, NOW)
+    await store.save_extraction(article_id, "text", 1, "<p/>", NOW)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        await store.save_summary(
+            article_id,
+            Summary(headline="doomed", bullets=["b"] * 5, model="m",
+                    prompt_version="summary-v2", categories=["ai", "ai"]),
+            summarized_at=NOW,
+        )
+    await store.record_article_error(article_id, "summarize", "boom")
+
+    row = await store.get_article_row(article_id)
+    assert row["summarized_at"] is None
+    assert article_id in await store.articles_pending("summarize")
 
 
 async def test_no_filter_returns_everything_including_untagged(store: StateStore) -> None:
