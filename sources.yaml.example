@@ -6,6 +6,38 @@
 # `params` is free-form per-driver data. Adding a source type means adding keys
 # here, never changing the SourceConfig model.
 
+# Topic categories (optional). `vocabulary` is the full set of categories
+# Claude may assign to an article during summarization; `filters` is the
+# subset the feed UI shows as filter buttons — usually a smaller, curated
+# list. Selecting several filter buttons narrows the feed to articles
+# carrying ALL of them (AND semantics).
+#
+# An empty (or absent) `vocabulary` disables tagging entirely. An empty
+# `filters` hides the filter row even if `vocabulary` is set. Removing a
+# category from `vocabulary` does NOT delete already-stored rows — it just
+# stops being assignable and filterable going forward.
+categories:
+  vocabulary:
+    - ai
+    - robotics
+    - finance
+    - invention
+    - ml-research
+    - ai-policy
+    - semiconductors
+    - hardware
+    - markets
+    - macro
+    - startups
+    - biotech
+    - energy
+    - security
+    - systems
+    - science
+    - policy
+    - manufacturing
+  filters: [ai, robotics, finance, invention]
+
 sources:
   - id: astralcodexten
     type: substack

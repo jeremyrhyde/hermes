@@ -86,11 +86,30 @@ class Settings(BaseSettings):
     )
 
 
+def _normalize_categories(names: list[str]) -> list[str]:
+    """Lowercase, de-duplicate, and preserve order."""
+
+    seen: set[str] = set()
+    normalized = []
+    for name in names:
+        lowered = name.lower()
+        if lowered not in seen:
+            seen.add(lowered)
+            normalized.append(lowered)
+    return normalized
+
+
 def load_sources_config(path: str | Path | None = None) -> SourcesConfig:
     """Read and validate ``sources.yaml`` at *path*.
 
     Returns an empty config if the file does not exist, so the server boots
     before any sources are configured.
+
+    Category names in the ``categories`` block are normalized here — this is
+    the one place that does it, so every downstream consumer (tool schema,
+    query validator, UI) sees the same canonical form. Raises ``ValueError``
+    naming any ``filters`` entry that has no corresponding ``vocabulary``
+    entry, since such a filter could never match anything.
     """
 
     if path is None:
@@ -102,4 +121,17 @@ def load_sources_config(path: str | Path | None = None) -> SourcesConfig:
     with p.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
-    return SourcesConfig.model_validate(raw)
+    config = SourcesConfig.model_validate(raw)
+
+    vocabulary = _normalize_categories(config.categories.vocabulary)
+    filters = _normalize_categories(config.categories.filters)
+    unknown = [f for f in filters if f not in vocabulary]
+    if unknown:
+        raise ValueError(
+            f"categories.filters contains entries not in categories.vocabulary: "
+            f"{', '.join(unknown)}"
+        )
+    config.categories.vocabulary = vocabulary
+    config.categories.filters = filters
+
+    return config
