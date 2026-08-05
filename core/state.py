@@ -12,6 +12,7 @@ correct without conversion.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -46,6 +47,29 @@ def parse_iso(value: str | None) -> datetime | None:
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _placeholders(n: int) -> str:
+    """``?`` placeholders for an ``IN`` clause of *n* bound values.
+
+    Only the placeholders are ever built by string work; the values themselves
+    stay bound, because category names arrive from the query string.
+    """
+
+    return ",".join("?" * n)
+
+
+_ALL_OF_CATEGORIES = """
+    SELECT article_id FROM article_categories
+     WHERE category IN ({placeholders})
+     GROUP BY article_id
+    HAVING COUNT(DISTINCT category) = ?
+"""
+"""Article ids carrying *every* one of the bound categories — the AND semantics.
+
+``DISTINCT`` guards the count even though ``PRIMARY KEY (article_id, category)``
+already rules out duplicate rows.
+"""
 
 
 class StateStore:
@@ -252,6 +276,15 @@ class StateStore:
     async def save_summary(
         self, article_id: int, summary: "Summary", summarized_at: datetime
     ) -> None:
+        """Write the summary, its categories, and the stage checkpoint as one unit.
+
+        Categories are deleted and re-inserted rather than merged, so
+        re-summarizing replaces the previous set instead of accumulating stale
+        tags. The summarizer has already lowercased, de-duplicated, capped, and
+        validated them against the configured vocabulary (spec 5.2), so they are
+        stored verbatim.
+        """
+
         import json
 
         await self.db.execute(
@@ -281,6 +314,14 @@ class StateStore:
             """,
             (iso(summarized_at), article_id),
         )
+        await self.db.execute(
+            "DELETE FROM article_categories WHERE article_id = ?", (article_id,)
+        )
+        if summary.categories:
+            await self.db.executemany(
+                "INSERT INTO article_categories (article_id, category) VALUES (?, ?)",
+                [(article_id, category) for category in summary.categories],
+            )
         await self.db.commit()
 
     async def record_article_error(
@@ -331,15 +372,37 @@ class StateStore:
     # ------------------------------------------------------------------
     # Feed
     # ------------------------------------------------------------------
-    async def feed_items(self, limit: int = 50, offset: int = 0) -> list[dict]:
+    async def feed_items(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        categories: list[str] | None = None,
+    ) -> list[dict]:
         """Summarized articles, newest first, joined with source identity.
 
         Returns plain dicts; assembling the FeedItem DTO is the API layer's job
         (spec section 12.5) so the wire format can evolve independently.
+
+        *categories* narrows the result to articles carrying **all** of them; an
+        empty list or ``None`` is the unfiltered feed. Each row's ``categories``
+        key holds every category that article carries, not just the filtered
+        ones — the live-update path needs the full set to decide whether an
+        arriving article satisfies the active filters.
         """
 
+        params: list[object] = []
+        category_clause = ""
+        if categories:
+            all_of = _ALL_OF_CATEGORIES.format(
+                placeholders=_placeholders(len(categories))
+            )
+            category_clause = f"AND a.id IN ({all_of})"
+            params.extend(categories)
+            params.append(len(categories))
+        params.extend((limit, offset))
+
         cur = await self.db.execute(
-            """
+            f"""
             SELECT a.id            AS article_id,
                    a.canonical_url AS url,
                    a.published_at  AS published_at,
@@ -358,9 +421,86 @@ class StateStore:
               JOIN summaries s ON s.article_id = a.id
               JOIN sources  src ON src.id = a.source_id
              WHERE a.summarized_at IS NOT NULL
+             {category_clause}
              ORDER BY COALESCE(a.published_at, a.fetched_at) DESC
              LIMIT ? OFFSET ?
             """,
-            (limit, offset),
+            params,
         )
-        return [dict(row) for row in await cur.fetchall()]
+        rows = [dict(row) for row in await cur.fetchall()]
+        by_article = await self._categories_for(row["article_id"] for row in rows)
+        for row in rows:
+            row["categories"] = by_article.get(row["article_id"], [])
+        return rows
+
+    async def _categories_for(
+        self, article_ids: Iterable[int]
+    ) -> dict[int, list[str]]:
+        """Map article id to its sorted categories, in one query for the page.
+
+        A second query over the page's ids rather than a per-row lookup, which
+        would be an N+1; and rather than GROUP_CONCAT in the feed query, whose
+        result would have to be split back apart on a separator that the data is
+        not guaranteed to exclude.
+        """
+
+        ids = list(article_ids)
+        if not ids:
+            return {}
+        cur = await self.db.execute(
+            f"""
+            SELECT article_id, category FROM article_categories
+             WHERE article_id IN ({_placeholders(len(ids))})
+             ORDER BY category
+            """,
+            ids,
+        )
+        by_article: dict[int, list[str]] = {}
+        for row in await cur.fetchall():
+            by_article.setdefault(row["article_id"], []).append(row["category"])
+        return by_article
+
+    async def category_counts(
+        self, filters: list[str], selected: list[str] | None = None
+    ) -> dict[str, int]:
+        """How many articles would remain if each filter were *also* selected.
+
+        Counts are contextual, not global: under AND semantics a global count
+        says nothing about the overlap, and the failure mode we care about is
+        clicking a healthy-looking pair and landing on an empty feed. Every
+        entry in *filters* is present in the result, zeros included — a dead end
+        must render as a disabled button, not disappear from the row.
+
+        Only summarized articles are counted, matching what the feed can return.
+        """
+
+        counts = {category: 0 for category in filters}
+        if not filters:
+            return counts
+
+        params: list[object] = list(filters)
+        selection_clause = ""
+        if selected:
+            all_of = _ALL_OF_CATEGORIES.format(
+                placeholders=_placeholders(len(selected))
+            )
+            selection_clause = f"AND ac.article_id IN ({all_of})"
+            params.extend(selected)
+            params.append(len(selected))
+
+        cur = await self.db.execute(
+            f"""
+            SELECT ac.category AS category,
+                   COUNT(DISTINCT ac.article_id) AS count
+              FROM article_categories ac
+              JOIN articles a ON a.id = ac.article_id
+             WHERE ac.category IN ({_placeholders(len(filters))})
+               AND a.summarized_at IS NOT NULL
+               {selection_clause}
+             GROUP BY ac.category
+            """,
+            params,
+        )
+        for row in await cur.fetchall():
+            counts[row["category"]] = row["count"]
+        return counts
