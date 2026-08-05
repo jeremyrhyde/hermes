@@ -16,7 +16,7 @@ async def test_apply_migrations_creates_schema(tmp_path) -> None:
     async with aiosqlite.connect(tmp_path / "t.db") as db:
         version = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert version == 1
+        assert version == 2
         names = await _table_names(db)
         assert {
             "sources", "articles", "summaries", "scores",
@@ -30,7 +30,7 @@ async def test_apply_migrations_is_idempotent(tmp_path) -> None:
         first = await apply_migrations(db, MIGRATIONS_DIR)
         second = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert first == second == 1
+        assert first == second == 2
 
 
 async def test_metadata_columns_exist_from_migration_001(tmp_path) -> None:
@@ -133,3 +133,40 @@ async def test_runner_applies_pending_migrations_in_order(tmp_path) -> None:
 
     assert version == 2
     assert "label" in cols
+
+
+async def test_migration_002_creates_article_categories(tmp_path) -> None:
+    async with aiosqlite.connect(tmp_path / "t.db") as db:
+        version = await apply_migrations(db, MIGRATIONS_DIR)
+
+        assert version == 2
+        cur = await db.execute("PRAGMA table_info(article_categories)")
+        cols = {row[1] for row in await cur.fetchall()}
+        assert {"article_id", "category"} <= cols
+
+
+async def test_article_categories_cascade_and_dedup(tmp_path) -> None:
+    """Composite PK makes tagging idempotent; cascade cleans up."""
+    async with aiosqlite.connect(tmp_path / "t.db") as db:
+        await apply_migrations(db, MIGRATIONS_DIR)
+        await db.execute("PRAGMA foreign_keys = ON")
+        await db.execute(
+            "INSERT INTO sources (id, type, name, feed_url) VALUES "
+            "('s1', 'substack', 'S', 'https://s/feed')"
+        )
+        await db.execute(
+            "INSERT INTO articles (id, source_id, guid, canonical_url, title, "
+            "fetched_at) VALUES (1, 's1', 'g1', 'https://s/p/1', 'T', 'now')"
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO article_categories VALUES (1, 'ai')"
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO article_categories VALUES (1, 'ai')"
+        )
+        cur = await db.execute("SELECT COUNT(*) FROM article_categories")
+        assert (await cur.fetchone())[0] == 1, "composite PK must dedup"
+
+        await db.execute("DELETE FROM articles WHERE id = 1")
+        cur = await db.execute("SELECT COUNT(*) FROM article_categories")
+        assert (await cur.fetchone())[0] == 0, "cascade must remove tags"
