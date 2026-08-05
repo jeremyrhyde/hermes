@@ -194,8 +194,10 @@ code {
   font-weight: 500;
 }
 
-/* A dead-end combination: present, legible, and inert. */
-.chip:disabled { opacity: 0.4; cursor: default; }
+/* A dead-end combination: present, legible, and inert. Matches .btn:disabled
+   rather than dimming further — the count digit is the thing that explains
+   why the button is dead, so it has to stay readable. */
+.chip:disabled { opacity: 0.55; cursor: default; }
 
 .chip-clear { background: none; border-style: dashed; }
 
@@ -413,6 +415,9 @@ main {
 
 @media (max-width: 640px) {
   main { padding: var(--space-4); }
+
+  /* Track main's narrower padding so the chips stay flush with the feed. */
+  .filter-row { padding-left: var(--space-4); padding-right: var(--space-4); }
 
   .feed-body { padding-left: var(--space-4); }
 }

@@ -112,7 +112,7 @@
 
       <template x-if="items.length === 0 && selected.length > 0">
         <p class="empty">
-          <span x-text="`No articles match all ${selected.length} filter${selected.length === 1 ? '' : 's'}.`"></span>
+          <span x-text="selected.length === 1 ? 'No articles match this filter.' : `No articles match all ${selected.length} filters.`"></span>
           <button type="button" class="btn btn-quiet" @click="clearCategories()">Clear filters</button>
         </p>
       </template>
