@@ -86,6 +86,19 @@ class Settings(BaseSettings):
     )
 
 
+class CategoryConfigError(ValueError):
+    """Raised when categories.filters is not a subset of categories.vocabulary.
+
+    Carries the otherwise-valid config so a caller can boot with the real
+    source list and categories disabled. Subclasses ``ValueError`` so callers
+    that only care that the config was rejected need no special case.
+    """
+
+    def __init__(self, message: str, config: SourcesConfig) -> None:
+        super().__init__(message)
+        self.config = config
+
+
 def _normalize_categories(names: list[str]) -> list[str]:
     """Lowercase, de-duplicate, and preserve order."""
 
@@ -109,7 +122,10 @@ def load_sources_config(path: str | Path | None = None) -> SourcesConfig:
     the one place that does it, so every downstream consumer (tool schema,
     query validator, UI) sees the same canonical form. Raises ``ValueError``
     naming any ``filters`` entry that has no corresponding ``vocabulary``
-    entry, since such a filter could never match anything.
+    entry, since such a filter could never match anything. The raised
+    :class:`CategoryConfigError` carries the parsed config so a caller can
+    still boot with the real ``sources`` list; its ``categories`` block is the
+    rejected, un-normalized one and must not be used.
     """
 
     if path is None:
@@ -127,9 +143,10 @@ def load_sources_config(path: str | Path | None = None) -> SourcesConfig:
     filters = _normalize_categories(config.categories.filters)
     unknown = [f for f in filters if f not in vocabulary]
     if unknown:
-        raise ValueError(
+        raise CategoryConfigError(
             f"categories.filters contains entries not in categories.vocabulary: "
-            f"{', '.join(unknown)}"
+            f"{', '.join(unknown)}",
+            config,
         )
     config.categories.vocabulary = vocabulary
     config.categories.filters = filters

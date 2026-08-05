@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from config import load_sources_config
+from config import CategoryConfigError, load_sources_config
 
 BASE_SOURCES = """
 sources:
@@ -58,6 +58,42 @@ categories:
   vocabulary: [ai, robotics]
   filters: [ai, finance]
 """))
+
+
+def test_bad_filters_still_carry_the_source_list(tmp_path) -> None:
+    """A typo in `filters` must not cost the operator their sources.
+
+    The error carries the parsed config so startup can boot the real feed
+    with categories disabled, rather than reporting an empty source list.
+    """
+    path = tmp_path / "sources.yaml"
+    path.write_text("""
+categories:
+  vocabulary: [ai, robotics]
+  filters: [ai, finance]
+
+sources:
+  - id: acx
+    type: substack
+    name: ACX
+    feed_url: https://acx.example/feed
+  - id: platformer
+    type: substack
+    name: Platformer
+    feed_url: https://platformer.example/feed
+  - id: stratechery
+    type: substack
+    name: Stratechery
+    feed_url: https://stratechery.example/feed
+""", encoding="utf-8")
+
+    with pytest.raises(CategoryConfigError) as ei:
+        load_sources_config(path)
+
+    assert [s.id for s in ei.value.config.sources] == [
+        "acx", "platformer", "stratechery"
+    ]
+    assert "finance" in str(ei.value)
 
 
 def test_vocabulary_without_filters_is_valid(tmp_path) -> None:

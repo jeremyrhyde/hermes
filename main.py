@@ -37,7 +37,7 @@ import uvicorn
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
-from config import Settings, load_sources_config
+from config import CategoryConfigError, Settings, load_sources_config
 from core.api import create_app
 from core.events import EventBus
 from core.state import StateStore
@@ -103,36 +103,35 @@ async def _build_components(
         sources = config.sources
         vocabulary = config.categories.vocabulary
         filters = config.categories.filters
+    except CategoryConfigError as exc:
+        failures.append({
+            "component": "categories_config",
+            "error": f"invalid categories block in "
+                     f"{settings.SOURCES_CONFIG_PATH}: {exc}",
+        })
+        logger.exception(
+            "main: invalid categories block in %s — booting with "
+            "categories disabled",
+            settings.SOURCES_CONFIG_PATH,
+        )
+        # Only the categories block was rejected, so the rest of the file is
+        # still good: keep the real sources — a one-word typo in `filters`
+        # must not silently halt all ingestion — and hard-zero both category
+        # lists, so the summarizer tags nothing and the UI shows no filter row.
+        sources = exc.config.sources
+        vocabulary = []
+        filters = []
     except Exception as exc:
-        # The category check raises a bare ValueError; every other failure
-        # mode here arrives as a YAMLError, an OSError, or pydantic's
-        # ValidationError. The type check must be exact — ValidationError
-        # subclasses ValueError, so isinstance would mislabel it.
-        is_category_error = type(exc) is ValueError
-        if is_category_error:
-            failures.append({
-                "component": "categories_config",
-                "error": f"invalid categories block in "
-                         f"{settings.SOURCES_CONFIG_PATH}: {exc}",
-            })
-            logger.exception(
-                "main: invalid categories block in %s — booting with "
-                "categories disabled",
-                settings.SOURCES_CONFIG_PATH,
-            )
-        else:
-            failures.append({
-                "component": "sources_config",
-                "error": f"could not load {settings.SOURCES_CONFIG_PATH}: "
-                         f"{type(exc).__name__}: {exc}",
-            })
-            logger.exception(
-                "main: could not load sources config %s — booting with no sources",
-                settings.SOURCES_CONFIG_PATH,
-            )
-        # Whatever went wrong, nothing from the file is trustworthy: no
-        # sources, and both category lists empty so the summarizer tags
-        # nothing and the UI shows no filter row.
+        failures.append({
+            "component": "sources_config",
+            "error": f"could not load {settings.SOURCES_CONFIG_PATH}: "
+                     f"{type(exc).__name__}: {exc}",
+        })
+        logger.exception(
+            "main: could not load sources config %s — booting with no sources",
+            settings.SOURCES_CONFIG_PATH,
+        )
+        # The file as a whole is unusable, so nothing from it is trustworthy.
         sources = []
         vocabulary = []
         filters = []
