@@ -59,15 +59,19 @@
   <!-- the selection is always reversible.                                 -->
   <!-- ------------------------------------------------------------------ -->
   <div class="filter-bar" x-show="tab === 'feed' && categoryFilters.length > 0">
-    <div class="filter-row" role="group" aria-label="Filter by category">
-      <template x-for="f in categoryFilters" :key="f.category">
-        <button type="button" class="chip"
-                :class="{ active: f.selected }"
-                :disabled="!f.selected && f.count === 0"
-                :aria-pressed="f.selected"
-                @click="toggleCategory(f.category)"
-                x-text="`${f.category} (${f.count})`"></button>
-      </template>
+    <div class="filter-row">
+      <div class="filter-scroll" role="group" aria-label="Filter by category">
+        <template x-for="f in categoryFilters" :key="f.category">
+          <button type="button" class="chip"
+                  :class="{ active: f.selected }"
+                  :disabled="!f.selected && f.count === 0"
+                  :aria-pressed="f.selected"
+                  @click="toggleCategory(f.category)"
+                  x-text="`${f.category} (${f.count})`"></button>
+        </template>
+      </div>
+      <!-- Outside the scroller on purpose: clear must stay reachable no
+           matter how far along the strip you have scrolled. -->
       <button type="button" class="chip chip-clear" x-show="selected.length > 0"
               @click="clearCategories()">clear</button>
     </div>
