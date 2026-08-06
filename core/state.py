@@ -379,6 +379,52 @@ class StateStore:
         return [row["id"] for row in await cur.fetchall()]
 
     # ------------------------------------------------------------------
+    # Saved articles
+    # ------------------------------------------------------------------
+    async def save_article(self, article_id: int, saved_at: datetime) -> bool:
+        """Pin *article_id*. Returns whether the article exists.
+
+        ``COALESCE`` keeps the original timestamp, so re-starring an
+        already-saved article is a no-op rather than a silent reorder of the
+        Saved list.
+
+        The boolean is existence, not change: ``True`` whenever the row is
+        there, ``False`` only for an unknown id. ``rowcount`` cannot answer
+        that — an UPDATE that writes the same value reports zero rows affected,
+        which is precisely the idempotent case that must succeed. ``RETURNING``
+        emits a row for every row the WHERE matched, changed or not, so one
+        statement answers existence without a second lookup to race against.
+        """
+
+        return await self._update_exists(
+            """
+            UPDATE articles SET saved_at = COALESCE(saved_at, ?)
+             WHERE id = ? RETURNING id
+            """,
+            (iso(saved_at), article_id),
+        )
+
+    async def unsave_article(self, article_id: int) -> bool:
+        """Unpin *article_id*. Returns whether the article exists.
+
+        Unpinning an article that was never pinned is not an error; see
+        :meth:`save_article` for why the boolean means existence.
+        """
+
+        return await self._update_exists(
+            "UPDATE articles SET saved_at = NULL WHERE id = ? RETURNING id",
+            (article_id,),
+        )
+
+    async def _update_exists(self, sql: str, params: tuple[object, ...]) -> bool:
+        """Run an ``UPDATE ... RETURNING`` and report whether it matched a row."""
+
+        cur = await self.db.execute(sql, params)
+        matched = bool(await cur.fetchall())
+        await self.db.commit()
+        return matched
+
+    # ------------------------------------------------------------------
     # Feed
     # ------------------------------------------------------------------
     async def feed_items(
@@ -397,6 +443,9 @@ class StateStore:
         key holds every category that article carries, not just the filtered
         ones — the live-update path needs the full set to decide whether an
         arriving article satisfies the active filters.
+
+        Each row's ``saved`` key is ``saved_at IS NOT NULL``. It needs no join —
+        the flag lives on the ``articles`` row this query already selects.
         """
 
         params: list[object] = []
@@ -415,6 +464,7 @@ class StateStore:
             SELECT a.id            AS article_id,
                    a.canonical_url AS url,
                    a.published_at  AS published_at,
+                   a.saved_at IS NOT NULL AS saved,
                    s.headline      AS headline,
                    s.bullets_json  AS bullets_json,
                    src.id          AS source_id,
@@ -440,6 +490,8 @@ class StateStore:
         by_article = await self._categories_for(row["article_id"] for row in rows)
         for row in rows:
             row["categories"] = by_article.get(row["article_id"], [])
+            # SQLite has no boolean type; the comparison comes back as 0/1.
+            row["saved"] = bool(row["saved"])
         return rows
 
     async def _categories_for(
