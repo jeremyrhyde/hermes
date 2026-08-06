@@ -209,3 +209,22 @@ async def test_saved_at_defaults_to_null(tmp_path) -> None:
         )
         cur = await db.execute("SELECT saved_at FROM articles WHERE id = 1")
         assert (await cur.fetchone())[0] is None
+
+
+async def test_saved_index_is_partial(tmp_path) -> None:
+    """The saved list orders by this index, and only saved rows belong in it.
+
+    Added to close a gap found reviewing Task 1: asserting the name alone
+    would pass against a full index over a mostly-NULL column.
+    """
+    async with aiosqlite.connect(tmp_path / "t.db") as db:
+        await apply_migrations(db, MIGRATIONS_DIR)
+
+        cur = await db.execute(
+            "SELECT partial FROM pragma_index_list('articles') WHERE name = ?",
+            ("idx_articles_saved",),
+        )
+        row = await cur.fetchone()
+
+    assert row is not None, "idx_articles_saved is missing from articles"
+    assert row[0] == 1, "idx_articles_saved must be a partial index"

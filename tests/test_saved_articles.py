@@ -69,6 +69,18 @@ async def test_unsaving_an_unsaved_article_succeeds(store: StateStore) -> None:
     assert await store.unsave_article(ids["a"]) is True
 
 
+async def test_saving_an_already_saved_article_succeeds(store: StateStore) -> None:
+    """True means 'the article exists', never 'the state changed'.
+
+    Added to close a gap found reviewing Task 2: the unsave mirror of this
+    was pinned, but the save case — the one the plan calls the most likely
+    place to get subtly wrong — was only covered at the API layer.
+    """
+    ids = await _seed(store, {"a": ["ai"]})
+    await store.save_article(ids["a"], NOW)
+    assert await store.save_article(ids["a"], LATER) is True
+
+
 async def test_unknown_article_returns_false(store: StateStore) -> None:
     """False means 'no such article' — never 'no change was needed'."""
     await _seed(store, {"a": ["ai"]})
@@ -84,3 +96,74 @@ async def test_deleting_an_article_drops_its_saved_state(store: StateStore) -> N
 
     cur = await store.db.execute("SELECT COUNT(*) AS n FROM articles")
     assert (await cur.fetchone())["n"] == 0
+
+
+async def test_saved_only_returns_just_saved_articles(store: StateStore) -> None:
+    ids = await _seed(store, {"kept": ["ai"], "skipped": ["ai"]})
+    await store.save_article(ids["kept"], NOW)
+
+    rows = await store.feed_items(saved_only=True)
+    assert [r["headline"] for r in rows] == ["kept"]
+
+
+async def test_saved_only_orders_by_most_recently_saved(store: StateStore) -> None:
+    """Newest-saved first, regardless of publication date."""
+    ids = await _seed(store, {"first": ["ai"], "second": ["ai"]})
+    await store.save_article(ids["first"], NOW)
+    await store.save_article(ids["second"], LATER)
+
+    rows = await store.feed_items(saved_only=True)
+    assert [r["headline"] for r in rows] == ["second", "first"]
+
+
+async def test_saved_only_composes_with_category_filter(store: StateStore) -> None:
+    ids = await _seed(store, {
+        "both": ["ai", "finance"], "ai_only": ["ai"], "unsaved": ["ai", "finance"],
+    })
+    await store.save_article(ids["both"], NOW)
+    await store.save_article(ids["ai_only"], NOW)
+
+    rows = await store.feed_items(categories=["ai", "finance"], saved_only=True)
+    assert [r["headline"] for r in rows] == ["both"]
+
+
+async def test_unfiltered_feed_still_includes_unsaved(store: StateStore) -> None:
+    """Saving does not remove an article from the Feed."""
+    ids = await _seed(store, {"a": ["ai"], "b": ["ai"]})
+    await store.save_article(ids["a"], NOW)
+    assert len(await store.feed_items()) == 2
+
+
+async def test_counts_scoped_to_saved_differ_from_global(store: StateStore) -> None:
+    ids = await _seed(store, {
+        "saved_ai": ["ai"], "unsaved_ai": ["ai"], "saved_fin": ["finance"],
+    })
+    await store.save_article(ids["saved_ai"], NOW)
+    await store.save_article(ids["saved_fin"], NOW)
+
+    assert await store.category_counts(["ai", "finance"]) == {"ai": 2, "finance": 1}
+    assert await store.category_counts(
+        ["ai", "finance"], saved_only=True
+    ) == {"ai": 1, "finance": 1}
+
+
+async def test_scoped_counts_still_backfill_zeros(store: StateStore) -> None:
+    """A dead end must render disabled, not vanish — scoped or not."""
+    ids = await _seed(store, {"a": ["ai"]})
+    await store.save_article(ids["a"], NOW)
+
+    counts = await store.category_counts(["ai", "robotics"], saved_only=True)
+    assert counts == {"ai": 1, "robotics": 0}
+
+
+async def test_scoped_counts_are_still_contextual(store: StateStore) -> None:
+    ids = await _seed(store, {
+        "both": ["ai", "finance"], "ai_only": ["ai"], "unsaved_both": ["ai", "finance"],
+    })
+    await store.save_article(ids["both"], NOW)
+    await store.save_article(ids["ai_only"], NOW)
+
+    counts = await store.category_counts(
+        ["ai", "finance"], selected=["ai"], saved_only=True
+    )
+    assert counts == {"ai": 2, "finance": 1}

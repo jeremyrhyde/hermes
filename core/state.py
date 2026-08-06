@@ -432,6 +432,7 @@ class StateStore:
         limit: int = 50,
         offset: int = 0,
         categories: list[str] | None = None,
+        saved_only: bool = False,
     ) -> list[dict]:
         """Summarized articles, newest first, joined with source identity.
 
@@ -446,6 +447,13 @@ class StateStore:
 
         Each row's ``saved`` key is ``saved_at IS NOT NULL``. It needs no join —
         the flag lives on the ``articles`` row this query already selects.
+
+        *saved_only* narrows to saved articles **and** switches the ordering to
+        newest-saved first, ignoring publication date. The coupling is
+        deliberate: the Saved view has exactly one natural order and the feed
+        has another, so a separate ``order_by`` parameter would be a second knob
+        that could only ever be turned in lockstep with this one. It composes
+        with *categories* — both narrow the same result.
         """
 
         params: list[object] = []
@@ -457,6 +465,11 @@ class StateStore:
             category_clause = f"AND a.id IN ({all_of})"
             params.extend(categories)
             params.append(len(categories))
+        saved_clause = "AND a.saved_at IS NOT NULL" if saved_only else ""
+        order_by = (
+            "a.saved_at DESC" if saved_only
+            else "COALESCE(a.published_at, a.fetched_at) DESC"
+        )
         params.extend((limit, offset))
 
         cur = await self.db.execute(
@@ -481,7 +494,8 @@ class StateStore:
               JOIN sources  src ON src.id = a.source_id
              WHERE a.summarized_at IS NOT NULL
              {category_clause}
-             ORDER BY COALESCE(a.published_at, a.fetched_at) DESC
+             {saved_clause}
+             ORDER BY {order_by}
              LIMIT ? OFFSET ?
             """,
             params,
@@ -522,7 +536,10 @@ class StateStore:
         return by_article
 
     async def category_counts(
-        self, filters: list[str], selected: list[str] | None = None
+        self,
+        filters: list[str],
+        selected: list[str] | None = None,
+        saved_only: bool = False,
     ) -> dict[str, int]:
         """How many articles would remain if each filter were *also* selected.
 
@@ -533,6 +550,10 @@ class StateStore:
         must render as a disabled button, not disappear from the row.
 
         Only summarized articles are counted, matching what the feed can return.
+
+        *saved_only* restricts the counted population to saved articles so the
+        filter row reads against the Saved view it sits above. Zero back-fill is
+        unchanged: a scoped dead end still renders disabled rather than vanishing.
         """
 
         counts = {category: 0 for category in filters}
@@ -548,6 +569,8 @@ class StateStore:
             selection_clause = f"AND ac.article_id IN ({all_of})"
             params.extend(selected)
             params.append(len(selected))
+        # A predicate on the join that already exists, not a second join.
+        saved_clause = "AND a.saved_at IS NOT NULL" if saved_only else ""
 
         cur = await self.db.execute(
             f"""
@@ -557,6 +580,7 @@ class StateStore:
               JOIN articles a ON a.id = ac.article_id
              WHERE ac.category IN ({_placeholders(len(filters))})
                AND a.summarized_at IS NOT NULL
+               {saved_clause}
                {selection_clause}
              GROUP BY ac.category
             """,
