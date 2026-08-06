@@ -16,7 +16,7 @@ async def test_apply_migrations_creates_schema(tmp_path) -> None:
     async with aiosqlite.connect(tmp_path / "t.db") as db:
         version = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert version == 2
+        assert version == 3
         names = await _table_names(db)
         assert {
             "sources", "articles", "summaries", "scores",
@@ -30,7 +30,7 @@ async def test_apply_migrations_is_idempotent(tmp_path) -> None:
         first = await apply_migrations(db, MIGRATIONS_DIR)
         second = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert first == second == 2
+        assert first == second == 3
 
 
 async def test_metadata_columns_exist_from_migration_001(tmp_path) -> None:
@@ -139,7 +139,7 @@ async def test_migration_002_creates_article_categories(tmp_path) -> None:
     async with aiosqlite.connect(tmp_path / "t.db") as db:
         version = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert version == 2
+        assert version == 3
         cur = await db.execute("PRAGMA table_info(article_categories)")
         cols = {row[1] for row in await cur.fetchall()}
         assert {"article_id", "category"} <= cols
@@ -170,3 +170,42 @@ async def test_article_categories_cascade_and_dedup(tmp_path) -> None:
         await db.execute("DELETE FROM articles WHERE id = 1")
         cur = await db.execute("SELECT COUNT(*) FROM article_categories")
         assert (await cur.fetchone())[0] == 0, "cascade must remove tags"
+
+
+async def test_migration_003_adds_saved_at(tmp_path) -> None:
+    async with aiosqlite.connect(tmp_path / "t.db") as db:
+        version = await apply_migrations(db, MIGRATIONS_DIR)
+
+        assert version == 3
+        cur = await db.execute("PRAGMA table_info(articles)")
+        cols = {row[1] for row in await cur.fetchall()}
+        assert "saved_at" in cols
+
+
+async def test_migration_003_is_not_rerun_on_restart(tmp_path) -> None:
+    """ADD COLUMN has no IF NOT EXISTS — a re-run raises, so this is the
+    first migration where the version-skip logic is load-bearing rather
+    than merely correct."""
+    db_path = tmp_path / "t.db"
+    async with aiosqlite.connect(db_path) as db:
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 3
+
+    async with aiosqlite.connect(db_path) as db:
+        # Raises OperationalError: duplicate column name if the filter regresses.
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 3
+
+
+async def test_saved_at_defaults_to_null(tmp_path) -> None:
+    """Nothing is saved before the user saves it — no backfill."""
+    async with aiosqlite.connect(tmp_path / "t.db") as db:
+        await apply_migrations(db, MIGRATIONS_DIR)
+        await db.execute(
+            "INSERT INTO sources (id, type, name, feed_url) VALUES "
+            "('s1', 'substack', 'S', 'https://s/feed')"
+        )
+        await db.execute(
+            "INSERT INTO articles (id, source_id, guid, canonical_url, title, "
+            "fetched_at) VALUES (1, 's1', 'g1', 'https://s/p/1', 'T', 'now')"
+        )
+        cur = await db.execute("SELECT saved_at FROM articles WHERE id = 1")
+        assert (await cur.fetchone())[0] is None
