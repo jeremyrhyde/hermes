@@ -73,6 +73,20 @@ already rules out duplicate rows.
 """
 
 
+def _score_group(rows: list[dict]) -> dict:
+    """Count and score range for one gated group, used by ``ranked_items``.
+
+    ``high``/``low`` are always present and ``None`` when the group is empty,
+    rather than absent — a collapsed row renders off these keys, and a missing
+    key is a crash where a null is a blank.
+    """
+
+    if not rows:
+        return {"count": 0, "high": None, "low": None}
+    scores = [row["score"] for row in rows]
+    return {"count": len(rows), "high": max(scores), "low": min(scores)}
+
+
 _PENDING_STAGES: dict[str, tuple[str, str]] = {
     "extract": ("extracted_at", ""),
     "summarize": (
@@ -775,6 +789,120 @@ class StateStore:
         for row in await cur.fetchall():
             by_article.setdefault(row["article_id"], []).append(row["category"])
         return by_article
+
+    # ------------------------------------------------------------------
+    # Gated ranking
+    # ------------------------------------------------------------------
+    async def ranked_items(
+        self,
+        cutoff: int,
+        limit: int,
+        categories: list[str] | None = None,
+    ) -> dict:
+        """The feed ordered by score and gated, with what it left out.
+
+        ``displayed`` holds the rows scoring at or above *cutoff*, best first,
+        capped at *limit*. Everything the gate withheld is *counted*, not
+        dropped: ``above_cutoff`` is the overflow that qualified but did not fit
+        (not a superset of ``displayed``), ``below_cutoff`` is what the cutoff
+        rejected, and ``unscored`` is what has not been scored yet. Each group
+        carries the ``high``/``low`` of its scores, ``None`` when it is empty,
+        so a collapsed row can say what it is hiding.
+
+        ``total`` is the sum of ``displayed`` and the three groups, which is
+        what makes "showing 5 of 30" a fact rather than an estimate.
+
+        An unscored article is never ranked and never displayed. Ordering it by
+        its ``NULL`` score is how it would silently disappear; here it is its
+        own group, so a stalled scorer shows up as a growing count.
+
+        Every group is derived from the *same* ordered result set, so the counts
+        and the list cannot disagree — the alternative, one query per group, can
+        drift the moment their predicates diverge by a character. That costs a
+        full scan of the summarized set on every call, which is the right trade
+        while the corpus is a personal feed: the counts need the whole
+        population anyway, and a ``LIMIT`` would only spare us the row
+        assembly, not the scan.
+
+        *categories* narrows the whole population — every group, not just
+        ``displayed`` — to articles carrying **all** of them, matching
+        :meth:`feed_items`' AND semantics. Unusable articles are excluded
+        throughout.
+
+        Displayed rows carry exactly the keys :meth:`feed_items` returns, so the
+        API assembles one DTO from both rather than two that can drift apart.
+        """
+
+        params: list[object] = []
+        category_clause = ""
+        if categories:
+            all_of = _ALL_OF_CATEGORIES.format(
+                placeholders=_placeholders(len(categories))
+            )
+            category_clause = f"AND a.id IN ({all_of})"
+            params.extend(categories)
+            params.append(len(categories))
+
+        cur = await self.db.execute(
+            f"""
+            SELECT a.id            AS article_id,
+                   a.canonical_url AS url,
+                   a.published_at  AS published_at,
+                   a.saved_at IS NOT NULL AS saved,
+                   s.headline      AS headline,
+                   s.bullets_json  AS bullets_json,
+                   src.id          AS source_id,
+                   src.name        AS source_name,
+                   src.type        AS source_type,
+                   (SELECT value FROM ratings r
+                     WHERE r.article_id = a.id
+                     ORDER BY r.created_at DESC, r.id DESC LIMIT 1) AS rating,
+                   (SELECT score FROM scores sc
+                     WHERE sc.article_id = a.id
+                     -- Same tie-break as feed_items, for the same reason: on a
+                     -- colliding created_at, timestamp order alone lets the
+                     -- OLDER row win.
+                     ORDER BY sc.created_at DESC, sc.id DESC LIMIT 1) AS score
+              FROM articles a
+              JOIN summaries s ON s.article_id = a.id
+              JOIN sources  src ON src.id = a.source_id
+             WHERE a.summarized_at IS NOT NULL
+               AND a.unusable_at IS NULL
+             {category_clause}
+             -- NULLs last explicitly. SQLite happens to sort them last under
+             -- DESC, but the whole point of this method is that unscored
+             -- articles never ride along on an implicit NULL ordering.
+             ORDER BY score IS NULL,
+                      score DESC,
+                      COALESCE(a.published_at, a.fetched_at) DESC
+            """,
+            params,
+        )
+        rows = [dict(row) for row in await cur.fetchall()]
+
+        scored = [row for row in rows if row["score"] is not None]
+        unscored_count = len(rows) - len(scored)
+
+        qualifying = [row for row in scored if row["score"] >= cutoff]
+        displayed = qualifying[:limit]
+        overflow = qualifying[limit:]
+        rejected = [row for row in scored if row["score"] < cutoff]
+
+        by_article = await self._categories_for(
+            row["article_id"] for row in displayed
+        )
+        for row in displayed:
+            row["categories"] = by_article.get(row["article_id"], [])
+            # SQLite has no boolean type; the comparison comes back as 0/1.
+            row["saved"] = bool(row["saved"])
+
+        return {
+            "displayed": displayed,
+            "above_cutoff": _score_group(overflow),
+            "below_cutoff": _score_group(rejected),
+            "unscored": {"count": unscored_count},
+            "total": len(rows),
+        }
 
     async def category_counts(
         self,
