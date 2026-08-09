@@ -374,7 +374,13 @@ function app() {
       } catch (err) {
         console.error('setKnob', key, err);
         this.knobError = err.detail || 'Could not save that setting.';
-        el.value = effective;
+        // Re-read rather than reusing `effective`, which was captured before
+        // the await. A second writer — another tab or device — can move the
+        // cutoff while this PUT is in flight, and restoring the snapshot would
+        // leave the box showing a number the gate rows below it disagree with.
+        // Alpine cannot correct that afterwards: `:value` only writes to the
+        // DOM when its expression changes, and the expression did not.
+        el.value = this.gating[this._knobField[key]];
         return;
       }
       return this.refreshFiltered();

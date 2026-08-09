@@ -385,7 +385,12 @@ main {
   border-radius: var(--radius);
   color: var(--color-text);
   font: inherit;
-  font-size: 0.875rem;
+  /* 16px, not the 0.875rem the surrounding secondary controls use. iOS Safari
+     zooms the viewport whenever a focused input is under 16px, and the page
+     sets no maximum-scale, so it stays zoomed afterwards. These are the app's
+     only text inputs — every other small control is a button, which does not
+     trigger it — so this is the one place the convention has to break. */
+  font-size: 1rem;
   font-variant-numeric: tabular-nums;
   letter-spacing: normal;
   text-transform: none;
