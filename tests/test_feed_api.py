@@ -182,3 +182,107 @@ def test_feed_items_carry_categories(client) -> None:
 
 def test_category_filter_composes_with_limit(client) -> None:
     assert len(client.get("/feed/?category=ai&limit=1").json()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Saved articles
+#
+# The ``seeded`` fixture creates articles in order, so article id 1 is
+# "Headline 0" and id 2 is "Headline 1". These tests save through the API
+# rather than the store so the whole request path is exercised.
+# ---------------------------------------------------------------------------
+
+
+def test_saving_is_idempotent(client: TestClient) -> None:
+    assert client.post("/saved/1").status_code == 204
+    assert client.post("/saved/1").status_code == 204, "a double-click must not fail"
+
+    saved = client.get("/saved/").json()
+    assert len(saved) == 1
+
+
+def test_unsaving_is_idempotent(client: TestClient) -> None:
+    client.post("/saved/1")
+    assert client.delete("/saved/1").status_code == 204
+    assert client.delete("/saved/1").status_code == 204, "already gone is not an error"
+    assert client.get("/saved/").json() == []
+
+
+def test_unsaving_something_never_saved_succeeds(client: TestClient) -> None:
+    """404 is about the article, not the saved state."""
+    assert client.delete("/saved/2").status_code == 204
+
+
+def test_saving_an_unknown_article_returns_404(client: TestClient) -> None:
+    res = client.post("/saved/9999")
+    assert res.status_code == 404
+    assert "9999" in res.json()["detail"]
+
+
+def test_unsaving_an_unknown_article_returns_404(client: TestClient) -> None:
+    assert client.delete("/saved/9999").status_code == 404
+
+
+def test_saved_list_is_newest_saved_first(client: TestClient) -> None:
+    client.post("/saved/2")  # "Headline 1"
+    client.post("/saved/1")  # "Headline 0", saved later, so it sorts first
+    headlines = [item["headline"] for item in client.get("/saved/").json()]
+    assert headlines == ["Headline 0", "Headline 1"]
+
+
+def test_feed_items_report_saved_state(client: TestClient) -> None:
+    client.post("/saved/1")
+
+    by_id = {i["article_id"]: i["saved"] for i in client.get("/feed/").json()}
+    assert by_id[1] is True
+    assert by_id[2] is False
+
+
+def test_saving_does_not_remove_from_the_feed(client: TestClient) -> None:
+    before = len(client.get("/feed/").json())
+    client.post("/saved/1")
+    assert len(client.get("/feed/").json()) == before
+
+
+def test_saved_list_filters_by_category(client: TestClient) -> None:
+    client.post("/saved/1")  # ["ai", "finance"]
+    client.post("/saved/2")  # ["ai"]
+
+    assert len(client.get("/saved/?category=ai").json()) == 2
+    assert len(client.get("/saved/?category=ai&category=finance").json()) == 1
+
+
+def test_saved_list_composes_with_limit(client: TestClient) -> None:
+    client.post("/saved/1")
+    client.post("/saved/2")
+    assert len(client.get("/saved/?category=ai&limit=1").json()) == 1
+
+
+def test_saved_list_rejects_unknown_category(client: TestClient) -> None:
+    res = client.get("/saved/?category=nonsense")
+    assert res.status_code == 400
+    assert "nonsense" in res.json()["detail"]
+
+
+def test_scope_saved_counts_only_saved_articles(client: TestClient) -> None:
+    client.post("/saved/2")  # ["ai"] only
+
+    feed = {f["category"]: f["count"]
+            for f in client.get("/categories/").json()["filters"]}
+    saved = {f["category"]: f["count"]
+             for f in client.get("/categories/?scope=saved").json()["filters"]}
+
+    assert feed["ai"] == 2 and feed["finance"] == 1
+    assert saved["ai"] == 1 and saved["finance"] == 0
+
+
+def test_scope_defaults_to_feed(client: TestClient) -> None:
+    plain = client.get("/categories/").json()
+    explicit = client.get("/categories/?scope=feed").json()
+    assert plain == explicit
+
+
+def test_unknown_scope_returns_400(client: TestClient) -> None:
+    res = client.get("/categories/?scope=nonsense")
+    assert res.status_code == 400
+    assert "nonsense" in res.json()["detail"]

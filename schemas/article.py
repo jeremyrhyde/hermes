@@ -122,3 +122,6 @@ class FeedItem(BaseModel):
     # Every category the article carries, not just the ones being filtered on —
     # the UI needs the full set to decide whether a live-arriving card belongs.
     categories: list[str] = Field(default_factory=list)
+    # Additive with a default, so stored rows and in-flight WebSocket payloads
+    # written before saving existed stay valid and render unstarred.
+    saved: bool = False
