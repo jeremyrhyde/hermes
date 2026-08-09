@@ -82,14 +82,52 @@ async def test_scoring_stamps_both_versions() -> None:
     assert result.profile_version == "profile-v1"
 
 
-async def test_scoring_is_deterministic_by_construction() -> None:
-    """R5: prompt sensitivity is bad enough without sampling noise on top."""
+async def test_scoring_never_sends_a_sampling_parameter() -> None:
+    """Claude 5 models reject temperature/top_p/top_k with a 400.
+
+    This is a live-API contract no mock can enforce, so it is asserted on the
+    outgoing call instead: every one of these parameters was a 400 in the
+    end-to-end run that found this, and the suite was green throughout because
+    every scorer test mocks the client.
+    """
     client = _client({"score": 50, "rationale": "r"})
     await _scorer(client).score(ARTICLE, SUMMARY)
 
     kwargs = client.messages.create.await_args.kwargs
-    assert kwargs["temperature"] == 0
+    for banned in ("temperature", "top_p", "top_k"):
+        assert banned not in kwargs, f"{banned} is rejected by Claude 5 models"
+
+
+async def test_scoring_forces_the_tool_and_pins_effort() -> None:
+    """Effort replaces temperature as the knob, so it is set, not defaulted."""
+    client = _client({"score": 50, "rationale": "r"})
+    await _scorer(client).score(ARTICLE, SUMMARY)
+
+    kwargs = client.messages.create.await_args.kwargs
     assert kwargs["tool_choice"] == {"type": "tool", "name": "emit_score"}
+    assert kwargs["output_config"] == {"effort": "high"}
+
+
+async def test_max_tokens_leaves_room_for_thinking() -> None:
+    """Adaptive thinking is on by default and shares the max_tokens budget.
+
+    Sized for the score plus a rationale alone, a turn truncates inside the
+    thinking that precedes it.
+    """
+    client = _client({"score": 50, "rationale": "r"})
+    await _scorer(client).score(ARTICLE, SUMMARY)
+
+    assert client.messages.create.await_args.kwargs["max_tokens"] >= 4096
+
+
+async def test_signals_record_the_model_and_effort() -> None:
+    """Both change scores, so both belong in the row that explains one."""
+    result = await _scorer(_client({"score": 50, "rationale": "r"})).score(
+        ARTICLE, SUMMARY
+    )
+
+    assert result.signals["model"] == "m"
+    assert result.signals["effort"] == "high"
 
 
 async def test_scoring_does_not_send_the_article_text() -> None:

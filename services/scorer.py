@@ -88,9 +88,15 @@ class ClaudeScorer:
         profile_version: str,
         rubric: str = RUBRIC,
         rubric_version: str = RUBRIC_VERSION,
+        effort: str = "high",
     ) -> None:
         self._client = client
         self._model = model
+        # Set explicitly rather than left to the API default, and recorded on
+        # every score. Effort changes what the model produces, so a silent
+        # change to the default would move scores with nothing in the row to
+        # explain why — the same reason the rubric and profile are versioned.
+        self._effort = effort
         self._profile_version = profile_version
         self._rubric_version = rubric_version
         # Rubric first, profile second: the rubric says how to apply the
@@ -106,11 +112,20 @@ class ClaudeScorer:
         try:
             response = await self._client.messages.create(
                 model=self._model,
-                max_tokens=1024,
-                # R5: a cosmetic prompt edit already flips 16-24% of scores at
-                # temperature 0. Sampling noise on top of that would make a
-                # score change unattributable to anything.
-                temperature=0,
+                # Caps thinking *and* response together. Adaptive thinking is on
+                # by default on Claude 5 models, so a budget sized for the score
+                # and a few sentences of rationale truncates mid-answer.
+                max_tokens=4096,
+                # Was `temperature=0`, for the determinism R5 argues for. Claude
+                # 5 models reject `temperature`, `top_p`, and `top_k` outright
+                # with a 400 — the parameter is gone, not merely discouraged.
+                #
+                # Nothing replaces it. Effort bounds how hard the model thinks,
+                # not how much it samples, so scoring is no longer reproducible
+                # by construction and two runs over one article may differ. R5's
+                # concern stands and its remedy does not: the rubric being
+                # frozen and versioned is now the whole of the defense.
+                output_config={"effort": self._effort},
                 system=self._system_prompt,
                 tools=[SCORE_TOOL],
                 tool_choice={"type": "tool", "name": "emit_score"},
@@ -133,6 +148,8 @@ class ClaudeScorer:
             signals={
                 "inputs": list(SCORING_INPUTS),
                 "summary_prompt_version": summary.prompt_version,
+                "model": self._model,
+                "effort": self._effort,
             },
         )
 
