@@ -22,6 +22,7 @@ from services.migrations import MIGRATIONS_DIR, apply_migrations
 
 if TYPE_CHECKING:  # pragma: no cover
     from schemas.article import ArticleRef, Summary
+    from schemas.scoring import Score
     from schemas.source import SourceConfig
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,34 @@ _ALL_OF_CATEGORIES = """
 
 ``DISTINCT`` guards the count even though ``PRIMARY KEY (article_id, category)``
 already rules out duplicate rows.
+"""
+
+
+_PENDING_STAGES: dict[str, tuple[str, str]] = {
+    "extract": ("extracted_at", ""),
+    "summarize": (
+        "summarized_at",
+        "AND extracted_at IS NOT NULL AND unusable_at IS NULL",
+    ),
+    "score": (
+        "scored_at",
+        "AND summarized_at IS NOT NULL AND unusable_at IS NULL",
+    ),
+}
+"""Per stage: the checkpoint column, and what must already be true to run it.
+
+Spelled out per stage rather than derived, because the preconditions do not
+follow from the checkpoint. Deriving them — "extract has none, everything else
+needs an extraction" — happens to hold for two stages and silently mis-gates the
+third: scoring would then run on an extracted but unsummarized article and score
+a summary that does not exist.
+
+The unusable exclusion is load-bearing here and nowhere else. This query selects
+for `<checkpoint> IS NULL`, which is precisely the state an unusable article is
+permanently in, so without it every one of them is returned as pending on every
+poll of its source, forever. The same condition on feed_items and
+category_counts is defensive — there, `summarized_at IS NOT NULL` already
+excludes them.
 """
 
 
@@ -333,6 +362,50 @@ class StateStore:
         )
         await self.db.commit()
 
+    async def save_score(
+        self, article_id: int, score: "Score", scored_at: datetime
+    ) -> None:
+        """Append the score row, then set the stage checkpoint, as one unit.
+
+        Append-only, like ratings: rescoring under a new rubric or profile adds
+        a row rather than overwriting, so a score stays comparable to the pair
+        that produced it and the history of how the ranking moved survives.
+        ``feed_items`` resolves the latest by ``created_at DESC``.
+
+        ``Score.value`` maps onto the ``scores.score`` column here — the one
+        place the two names meet. See :mod:`schemas.scoring` for why the model
+        does not call it ``score``.
+
+        The ``scored_at`` checkpoint is written LAST, for the reason spelled out
+        in :meth:`save_summary`: a checkpoint that lands before its data leaves
+        an article that looks scored, has no score row, and is never retried.
+        """
+
+        import json
+
+        await self.db.execute(
+            """
+            INSERT INTO scores
+                (article_id, score, rationale, rubric_version, profile_version,
+                 signals, created_at, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                article_id, score.value, score.rationale, score.rubric_version,
+                score.profile_version, json.dumps(score.signals), iso(scored_at),
+                json.dumps(score.metadata),
+            ),
+        )
+        await self.db.execute(
+            """
+            UPDATE articles
+               SET scored_at = ?, last_error = NULL, error_stage = NULL
+             WHERE id = ?
+            """,
+            (iso(scored_at), article_id),
+        )
+        await self.db.commit()
+
     async def record_article_error(
         self, article_id: int, stage: str, error: str
     ) -> None:
@@ -361,17 +434,7 @@ class StateStore:
         # The column name is interpolated because it is chosen from a fixed
         # internal dict; source_id is user-controlled (it comes from
         # sources.yaml) and is therefore always a bound parameter.
-        column = {"extract": "extracted_at", "summarize": "summarized_at"}[stage]
-        # The unusable exclusion is load-bearing here and nowhere else. This
-        # query selects for `summarized_at IS NULL`, which is precisely the
-        # state an unusable article is permanently in, so without it every one
-        # of them is returned as pending on every poll of its source, forever.
-        # The same condition on feed_items and category_counts is defensive —
-        # there, `summarized_at IS NOT NULL` already excludes them.
-        precondition = (
-            "" if stage == "extract"
-            else "AND extracted_at IS NOT NULL AND unusable_at IS NULL"
-        )
+        column, precondition = _PENDING_STAGES[stage]
         source_clause = "AND source_id = ?" if source_id is not None else ""
         params: tuple[object, ...] = (
             (source_id, limit) if source_id is not None else (limit,)
@@ -523,6 +586,44 @@ class StateStore:
         )
         await self.db.commit()
         return True
+
+    # ------------------------------------------------------------------
+    # Taste profiles
+    # ------------------------------------------------------------------
+    async def latest_profile(self) -> tuple[str, str] | None:
+        """The newest profile version and its body, or ``None`` if unseeded.
+
+        A query rather than a single-row lookup: phase 4 appends distilled
+        versions alongside the stated one, so "current" is always the most
+        recently created row, never the only row.
+        """
+
+        cur = await self.db.execute(
+            "SELECT version, body FROM profile_versions ORDER BY created_at DESC LIMIT 1"
+        )
+        row = await cur.fetchone()
+        return (row["version"], row["body"]) if row else None
+
+    async def seed_profile(self, version: str, body: str) -> None:
+        """Insert only if absent, so the file never clobbers an edited profile.
+
+        The same shape as :meth:`seed_preference`, for the same reason: the file
+        on disk is a starting point, and the table is authoritative once
+        anything has written to it. ``kind='stated'`` and an ``approved_at`` set
+        on insert — a hand-written profile is approved by construction; only a
+        distilled one needs review.
+        """
+
+        now = iso(utcnow())
+        await self.db.execute(
+            """
+            INSERT OR IGNORE INTO profile_versions
+                (version, body, kind, created_at, approved_at)
+            VALUES (?, ?, 'stated', ?, ?)
+            """,
+            (version, body, now, now),
+        )
+        await self.db.commit()
 
     async def _article_exists(self, article_id: int) -> bool:
         cur = await self.db.execute(
