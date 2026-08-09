@@ -10,8 +10,10 @@ from core.events import EventBus
 from core.state import StateStore
 from schemas.article import ArticleRef, DiscoverResult, Summary
 from schemas.events import Event, EventType
+from schemas.scoring import Score
 from schemas.source import SourceConfig
 from services.pipeline import Pipeline
+from services.scorer import ScoringError
 from services.sources.base import PollState, SourceDriver
 from services.sources.registry import SourceRegistry
 from services.summarizer import SummarizationError
@@ -79,12 +81,12 @@ def _refs(n: int) -> list[ArticleRef]:
     ]
 
 
-async def _pipeline(store, driver, summarizer, bus=None):
+async def _pipeline(store, driver, summarizer, bus=None, scorer=None):
     registry = SourceRegistry()
     registry.register(driver)
     return Pipeline(
         store=store, registry=registry, summarizer=summarizer,
-        bus=bus or EventBus(),
+        bus=bus or EventBus(), scorer=scorer,
     )
 
 
@@ -428,3 +430,108 @@ async def test_unusable_article_publishes_no_summarized_event(
     await pipeline.process_source(CFG, PollState(), now=NOW)
 
     assert seen == []
+
+
+# ---------------------------------------------------------------------------
+# Scoring stage — 2026-08-09-phase3-scoring-spec.md
+# ---------------------------------------------------------------------------
+
+
+class StubScorer:
+    def __init__(self, fail: bool = False) -> None:
+        self.calls = 0
+        self._fail = fail
+
+    async def score(self, article, summary):
+        self.calls += 1
+        if self._fail:
+            raise ScoringError("stub failure")
+        return Score(value=77, rationale="r", rubric_version="rubric-v1",
+                     profile_version="profile-v1")
+
+
+async def test_summarized_articles_are_scored(store: StateStore) -> None:
+    await store.upsert_source(CFG)
+    scorer = StubScorer()
+    driver, summarizer = StubDriver(_refs(2)), StubSummarizer()
+    pipeline = await _pipeline(store, driver, summarizer, scorer=scorer)
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert scorer.calls == 2
+    assert [i["score"] for i in await store.feed_items()] == [77, 77]
+
+
+async def test_scoring_is_skipped_when_no_scorer_is_wired(store: StateStore) -> None:
+    """Degrades like summarizer=None rather than crashing."""
+    await store.upsert_source(CFG)
+    pipeline = await _pipeline(store, StubDriver(_refs(1)), StubSummarizer())
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert (await store.feed_items())[0]["score"] is None
+
+
+async def test_a_scoring_failure_does_not_count_as_a_poll_failure(
+    store: StateStore,
+) -> None:
+    """It would drive source backoff and eventually disable a healthy source."""
+    await store.upsert_source(CFG)
+    pipeline = await _pipeline(store, StubDriver(_refs(2)), StubSummarizer(),
+                               scorer=StubScorer(fail=True))
+
+    result = await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert result.failed == 0
+
+
+async def test_a_scoring_failure_leaves_the_article_readable(store: StateStore) -> None:
+    await store.upsert_source(CFG)
+    pipeline = await _pipeline(store, StubDriver(_refs(1)), StubSummarizer(),
+                               scorer=StubScorer(fail=True))
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    items = await store.feed_items()
+    assert len(items) == 1 and items[0]["score"] is None
+
+
+async def test_a_scoring_failure_is_retried_on_the_next_poll(store: StateStore) -> None:
+    await store.upsert_source(CFG)
+    scorer = StubScorer(fail=True)
+    pipeline = await _pipeline(store, StubDriver(_refs(1)), StubSummarizer(),
+                               scorer=scorer)
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert scorer.calls == 2, "an unscored article stays pending"
+
+
+async def test_unusable_articles_are_never_scored(store: StateStore) -> None:
+    await store.upsert_source(CFG)
+    scorer = StubScorer()
+    driver = StubDriver(_thin_refs(5), html="<html><body><p>too short</p></body></html>")
+    pipeline = await _pipeline(store, driver, StubSummarizer(), scorer=scorer)
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert scorer.calls == 0
+
+
+async def test_scoring_publishes_an_article_scored_event(store: StateStore) -> None:
+    await store.upsert_source(CFG)
+    bus = EventBus()
+    seen: list[Event] = []
+
+    async def collect(event: Event) -> None:
+        seen.append(event)
+
+    bus.subscribe(EventType.ARTICLE_SCORED, collect)
+    pipeline = await _pipeline(store, StubDriver(_refs(1)), StubSummarizer(),
+                               bus=bus, scorer=StubScorer())
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert len(seen) == 1
+    assert seen[0].data["score"] == 77

@@ -419,6 +419,40 @@ class StateStore:
         )
         await self.db.commit()
 
+    async def get_summary(self, article_id: int) -> "Summary | None":
+        """Reassemble one stored summary, categories included.
+
+        The scoring stage's input. Scoring cannot always carry the summary in
+        memory from the run that produced it: a scoring failure leaves the
+        article summarized but unscored, and the retry happens on a later poll
+        where nothing re-summarizes. Returns None when no summary row exists.
+        """
+
+        import json
+
+        from schemas.article import Summary
+
+        cur = await self.db.execute(
+            """
+            SELECT headline, bullets_json, model, prompt_version, metadata
+              FROM summaries WHERE article_id = ?
+            """,
+            (article_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+
+        by_article = await self._categories_for([article_id])
+        return Summary(
+            headline=row["headline"],
+            bullets=json.loads(row["bullets_json"]),
+            model=row["model"],
+            prompt_version=row["prompt_version"],
+            categories=by_article.get(article_id, []),
+            metadata=json.loads(row["metadata"] or "{}"),
+        )
+
     async def save_score(
         self, article_id: int, score: "Score", scored_at: datetime
     ) -> None:

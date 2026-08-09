@@ -25,7 +25,7 @@ from schemas.article import Article, Summary
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "summary-v2"
+PROMPT_VERSION = "summary-v3"
 
 SYSTEM_PROMPT = """\
 You summarize articles for a personal reading feed. The reader wants to decide, \
@@ -43,6 +43,10 @@ a specific claim, finding, or event from the article. Prefer concrete details \
 (numbers, names, outcomes) over generalities.
 - Bullets must be independently meaningful. Do not write "the author then \
 explains" or otherwise refer to the article's structure.
+- Keep the specifics: numbers, named entities, and the mechanism or reasoning \
+behind a claim. State the actual claim rather than the fact that a claim was \
+made — "X raises Y by 30% because Z" and not "the piece discusses the effect \
+of X on Y".
 """
 
 # Appended only when a vocabulary is configured — with no vocabulary the tool

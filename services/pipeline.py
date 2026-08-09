@@ -26,6 +26,7 @@ from services.extraction import (
     extract_text,
     unusable_reason,
 )
+from services.scorer import Scorer, ScoringError
 from services.sources.base import PollState
 from services.sources.registry import SourceRegistry
 from services.summarizer import Summarizer
@@ -36,6 +37,22 @@ logger = logging.getLogger(__name__)
 #: How many articles may be summarized concurrently. Summarization is the only
 #: stage that touches a paid API, so it is the only one worth bounding.
 SUMMARIZE_CONCURRENCY = 4
+
+
+def _article_from_row(row) -> Article:
+    """Build the DTO the summarizer and scorer both take from an article row."""
+    return Article(
+        id=row["id"],
+        source_id=row["source_id"],
+        guid=row["guid"],
+        canonical_url=row["canonical_url"],
+        title=row["title"],
+        author=row["author"],
+        published_at=parse_iso(row["published_at"]),
+        fetched_at=parse_iso(row["fetched_at"]),
+        text=row["text"],
+        word_count=row["word_count"],
+    )
 
 
 @dataclass
@@ -60,11 +77,16 @@ class Pipeline:
         registry: SourceRegistry,
         summarizer: Summarizer,
         bus: EventBus,
+        scorer: Scorer | None = None,
     ) -> None:
         self._store = store
         self._registry = registry
         self._summarizer = summarizer
         self._bus = bus
+        # Optional so a deployment with no profile configured still fetches,
+        # extracts and summarizes: an unscored article is a readable article
+        # with a blank score, not a lost one.
+        self._scorer = scorer
         self._summarize_sem = asyncio.Semaphore(SUMMARIZE_CONCURRENCY)
 
     # ------------------------------------------------------------------
@@ -94,15 +116,17 @@ class Pipeline:
             if article_id is not None:
                 new_ids.append(article_id)
 
-        # Include anything left pending from a previous crashed run. Both stages
-        # are recovered: an article can be stranded with no extraction (crash
-        # between ingest and extract) or extracted but not summarized (crash
+        # Include anything left pending from a previous crashed run. Every stage
+        # is recovered: an article can be stranded with no extraction (crash
+        # between ingest and extract), extracted but not summarized (crash
         # mid-summarize, which a transient summarizer API error is enough to
-        # cause). Neither re-enters via `new_ids`, because the row already
-        # exists and `ingest_article` returns None for it, so without these two
-        # queries a stranded article would never be retried at all.
+        # cause), or summarized but not scored — the last being routine rather
+        # than exceptional, since a scoring failure is deliberately not a poll
+        # failure. None re-enters via `new_ids`, because the row already exists
+        # and `ingest_article` returns None for it, so without these queries a
+        # stranded article would never be retried at all.
         #
-        # Both are scoped to this source: another source's pending articles must
+        # All are scoped to this source: another source's pending articles must
         # not be fetched with this driver or published under this source's ref.
         pending_extract = await self._store.articles_pending(
             "extract", limit=50, source_id=source.id
@@ -110,7 +134,14 @@ class Pipeline:
         pending_summarize = await self._store.articles_pending(
             "summarize", limit=50, source_id=source.id
         )
-        to_process = list(dict.fromkeys(new_ids + pending_extract + pending_summarize))
+        pending_score = await self._store.articles_pending(
+            "score", limit=50, source_id=source.id
+        )
+        to_process = list(
+            dict.fromkeys(
+                new_ids + pending_extract + pending_summarize + pending_score
+            )
+        )
 
         failures = 0
         for article_id in to_process:
@@ -155,7 +186,11 @@ class Pipeline:
         refs: list[ArticleRef],
         now: datetime,
     ) -> bool:
-        """Run extract then summarize for one article. Returns False on failure."""
+        """Run extract, summarize, then score for one article.
+
+        Returns False on a failure worth counting against the source. A scoring
+        failure is not one of those — see the scoring block below.
+        """
 
         row = await self._store.get_article_row(article_id)
         if row is None:
@@ -184,6 +219,20 @@ class Pipeline:
                 logger.warning("pipeline: summarize failed for %d: %s", article_id, exc)
                 await self._fail(article_id, "summarize", exc)
                 return False
+            row = await self._store.get_article_row(article_id)
+
+        if self._scorer is not None and row["scored_at"] is None:
+            try:
+                await self._score(article_id, row, now)
+            except Exception as exc:
+                # Deliberately NOT a poll failure. The poll's failure tally
+                # drives source-level error backoff and eventually
+                # disabled_until, so counting scoring errors here would silence
+                # a source whose fetching is perfectly healthy. The error is
+                # recorded on the article and scored_at stays NULL, so the next
+                # poll retries it.
+                logger.warning("pipeline: score failed for %d: %s", article_id, exc)
+                await self._fail(article_id, "score", exc)
 
         return True
 
@@ -252,18 +301,7 @@ class Pipeline:
     async def _summarize(
         self, article_id: int, row, source: SourceConfig, now: datetime
     ) -> None:
-        article = Article(
-            id=row["id"],
-            source_id=row["source_id"],
-            guid=row["guid"],
-            canonical_url=row["canonical_url"],
-            title=row["title"],
-            author=row["author"],
-            published_at=parse_iso(row["published_at"]),
-            fetched_at=parse_iso(row["fetched_at"]),
-            text=row["text"],
-            word_count=row["word_count"],
-        )
+        article = _article_from_row(row)
 
         summary = await self._summarizer.summarize(article)
         await self._store.save_summary(article_id, summary, summarized_at=now)
@@ -281,6 +319,36 @@ class Pipeline:
                     "published_at": row["published_at"],
                     "source": source.to_ref().model_dump(mode="json"),
                 }
+            },
+        )
+
+    async def _score(self, article_id: int, row, now: datetime) -> None:
+        """Score the stored summary — never the article text.
+
+        The summary is read back rather than carried from :meth:`_summarize`,
+        because the two stages are not always in the same run: a scoring
+        failure leaves a summarized, unscored article that a later poll picks
+        up with nothing in memory.
+        """
+
+        summary = await self._store.get_summary(article_id)
+        if summary is None:
+            # summarized_at is set but no summary row exists: a corrupt
+            # checkpoint, not something a retry can heal on its own.
+            raise ScoringError(f"article {article_id} has no stored summary")
+
+        score = await self._scorer.score(_article_from_row(row), summary)
+        await self._store.save_score(article_id, score, scored_at=now)
+
+        await self._publish(
+            EventType.ARTICLE_SCORED,
+            subject=str(article_id),
+            data={
+                "article_id": article_id,
+                "score": score.value,
+                "rationale": score.rationale,
+                "rubric_version": score.rubric_version,
+                "profile_version": score.profile_version,
             },
         )
 

@@ -209,9 +209,9 @@ async def test_categories_are_normalized_and_capped() -> None:
     assert len(summary.categories) <= 5
 
 
-async def test_prompt_version_is_v2() -> None:
+async def test_prompt_version_is_v3() -> None:
     from services.summarizer import PROMPT_VERSION
 
-    assert PROMPT_VERSION == "summary-v2", (
+    assert PROMPT_VERSION == "summary-v3", (
         "the prompt changed, so summaries from it are different artifacts"
     )
