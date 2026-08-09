@@ -35,6 +35,11 @@ class Settings(BaseSettings):
         SOURCES_CONFIG_PATH: Path to the declarative source list. A missing
             file yields an empty source list rather than an error, so the
             server boots unconfigured. Default ``"./sources.yaml"``.
+        PROFILE_PATH: Path to the hand-written taste profile seeded into
+            ``profile_versions`` on first run. Gitignored, like
+            ``sources.yaml``. A missing file disables scoring and is reported
+            at ``/health``; articles still ingest and summarize. Default
+            ``"./profile.md"``.
         ANTHROPIC_API_KEY: Key used for summarization. Empty by default; if
             unset, the server still boots but the poller never starts, so
             nothing is ingested or summarized, and the failure is reported
@@ -55,10 +60,15 @@ class Settings(BaseSettings):
             interval. Default ``14_400`` (4 h).
         DEFAULT_SCORE_CUTOFF: Seed value only, used to populate the
             ``preferences`` table on first run; the live knob is
-            runtime-editable from the UI thereafter. Default ``70``.
+            runtime-editable from the UI thereafter. Default ``0`` — scoring
+            ships in calibration mode, where nothing is hidden until the scores
+            have been read against real articles.
         DEFAULT_MAX_DISPLAYED: Seed value only, used to populate the
             ``preferences`` table on first run; the live knob is
-            runtime-editable from the UI thereafter. Default ``5``.
+            runtime-editable from the UI thereafter. Default ``50``.
+
+    The two ``DEFAULT_`` values are mirrored by ``core.api._PREFERENCES``, which
+    supplies them when no row exists at all. Change one and change the other.
 
     Add domain settings (DB path, upstream URLs, credentials, poll intervals)
     as new fields here rather than reading ``os.environ`` at the call site —
@@ -73,6 +83,7 @@ class Settings(BaseSettings):
 
     DB_PATH: str = "./hermes.db"
     SOURCES_CONFIG_PATH: str = "./sources.yaml"
+    PROFILE_PATH: str = "./profile.md"
 
     ANTHROPIC_API_KEY: str = ""
     SUMMARY_MODEL: str = "claude-haiku-4-5"
@@ -83,8 +94,8 @@ class Settings(BaseSettings):
     POLL_MIN_SECONDS: int = Field(default=900, gt=0)
     POLL_MAX_SECONDS: int = Field(default=14_400, gt=0)
 
-    DEFAULT_SCORE_CUTOFF: int = 70
-    DEFAULT_MAX_DISPLAYED: int = 5
+    DEFAULT_SCORE_CUTOFF: int = 0
+    DEFAULT_MAX_DISPLAYED: int = 50
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"

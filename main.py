@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -38,18 +39,70 @@ from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
 from config import CategoryConfigError, Settings, load_sources_config
-from core.api import create_app
+from core.api import PREF_MAX_DISPLAYED, PREF_SCORE_CUTOFF, create_app
 from core.events import EventBus
 from core.state import StateStore
 from core.websocket import WebSocketManager
 from schemas.events import Event, EventType
 from services.pipeline import Pipeline
 from services.poller import Poller
+from services.scorer import ClaudeScorer
 from services.sources.registry import SourceRegistry
 from services.sources.substack import SubstackDriver
 from services.summarizer import ClaudeSummarizer
 
 logger = logging.getLogger(__name__)
+
+
+PROFILE_VERSION = "profile-v1"
+"""The version stamped on the profile seeded from ``PROFILE_PATH``.
+
+A constant, not a hash of the file: seeding is insert-if-absent, so the file is
+a starting point and the table is authoritative once anything has written to
+it. Editing ``profile.md`` after the first boot therefore changes nothing —
+phase 4 owns editing the live profile, and it appends a new version so the
+scores stamped with the old one stay interpretable.
+"""
+
+
+async def _seed_profile_from_file(
+    store: StateStore, path: str, failures: list[dict[str, Any]]
+) -> None:
+    """Seed the taste profile from *path*, if it exists and is readable.
+
+    Every problem here is a logged failure entry rather than a raise, following
+    ``sources.yaml``: an absent profile means scoring is off, not that the
+    server is down. Articles still ingest and summarize, and an unscored article
+    is a readable article with a blank score.
+
+    Reports only what went wrong with the *file*. Whether scoring ends up
+    enabled is decided once, below, where the API key is also known.
+    """
+
+    p = Path(path)
+    if not p.exists():
+        return
+
+    try:
+        body = p.read_text(encoding="utf-8")
+    except OSError as exc:
+        failures.append({
+            "component": "profile",
+            "error": f"could not read {path}: {type(exc).__name__}: {exc}",
+        })
+        logger.exception("main: could not read taste profile %s", path)
+        return
+
+    if not body.strip():
+        failures.append({
+            "component": "profile",
+            "error": f"{path} is empty; a blank profile would score every "
+                     f"article against nothing",
+        })
+        logger.error("main: taste profile %s is empty", path)
+        return
+
+    await store.seed_profile(PROFILE_VERSION, body)
 
 
 async def _build_components(
@@ -87,8 +140,17 @@ async def _build_components(
 
     store = StateStore(settings.DB_PATH)
     await store.start()
-    await store.seed_preference("score_cutoff", str(settings.DEFAULT_SCORE_CUTOFF))
-    await store.seed_preference("max_displayed", str(settings.DEFAULT_MAX_DISPLAYED))
+    await store.seed_preference(
+        PREF_SCORE_CUTOFF, str(settings.DEFAULT_SCORE_CUTOFF)
+    )
+    await store.seed_preference(
+        PREF_MAX_DISPLAYED, str(settings.DEFAULT_MAX_DISPLAYED)
+    )
+
+    # The profile is data seeded from a file, exactly like sources.yaml — and
+    # like it, a problem with the file degrades a feature rather than the boot.
+    await _seed_profile_from_file(store, settings.PROFILE_PATH, failures)
+    profile = await store.latest_profile()
 
     # Sources: declarative fields are refreshed from YAML on every boot; poll
     # state (etag/hash/backoff) is deliberately preserved by upsert_source.
@@ -158,12 +220,42 @@ async def _build_components(
             "main: ANTHROPIC_API_KEY is not set — polling and summarization disabled"
         )
         summarizer = None
+        client = None
     else:
+        # One client for both stages: they talk to the same API with the same
+        # credentials, and sharing it shares the connection pool.
+        client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         summarizer = ClaudeSummarizer(
-            AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY),
+            client,
             model=settings.SUMMARY_MODEL,
             max_input_chars=settings.SUMMARY_MAX_INPUT_CHARS,
             vocabulary=vocabulary,
+        )
+
+    # Scoring needs both halves of the scoring function: the key to call the
+    # model, and a profile to judge against. Missing either disables it, and
+    # the entry says which — "scoring is off" without a reason is the kind of
+    # thing an operator rediscovers a week later from an empty score column.
+    if client is None or profile is None:
+        missing = []
+        if client is None:
+            missing.append("ANTHROPIC_API_KEY is not set")
+        if profile is None:
+            missing.append(f"no taste profile ({settings.PROFILE_PATH} is absent)")
+        failures.append({
+            "component": "scorer",
+            "error": f"scoring is disabled: {'; '.join(missing)}. Articles are "
+                     f"still ingested and summarized; they stay unscored.",
+        })
+        logger.error("main: scoring disabled — %s", "; ".join(missing))
+        scorer = None
+    else:
+        profile_version, profile_body = profile
+        scorer = ClaudeScorer(
+            client,
+            model=settings.SCORE_MODEL,
+            profile_body=profile_body,
+            profile_version=profile_version,
         )
 
     # WebSocket manager — subscribes itself to the bus, so anything published
@@ -172,7 +264,8 @@ async def _build_components(
     ws_manager.subscribe_to_bus(bus)
 
     pipeline = Pipeline(
-        store=store, registry=registry, summarizer=summarizer, bus=bus
+        store=store, registry=registry, summarizer=summarizer, bus=bus,
+        scorer=scorer,
     )
     poller = Poller(
         store=store,

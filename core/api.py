@@ -47,6 +47,7 @@ from fastapi.staticfiles import StaticFiles
 
 from core.state import parse_iso
 from schemas.article import FeedItem, InteractionIn, RatingIn
+from schemas.preferences import PreferenceIn
 from schemas.source import SourceConfig, SourceRef
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -130,6 +131,77 @@ def _selected_categories(
         if name not in selected:
             selected.append(name)
     return selected
+
+
+PREF_SCORE_CUTOFF = "score_cutoff"
+PREF_MAX_DISPLAYED = "max_displayed"
+"""The runtime knob keys.
+
+Constants rather than string literals because three places spell them — this
+API, the seeder in ``main.py``, and the tests — and a typo in any one of them
+is a knob that silently reverts to its default on every read.
+"""
+
+
+class _IntKnob:
+    """An integer preference: what it defaults to and what it accepts."""
+
+    def __init__(self, default: int, low: int, high: int) -> None:
+        self.default = default
+        self.low = low
+        self.high = high
+
+    def contains(self, value: int) -> bool:
+        return self.low <= value <= self.high
+
+
+_PREFERENCES: dict[str, _IntKnob] = {
+    # Mirrors ``Settings.DEFAULT_SCORE_CUTOFF`` / ``DEFAULT_MAX_DISPLAYED``,
+    # which are seeds for the ``preferences`` table. These are the fallbacks
+    # for a read that finds no row at all — an app whose store was never
+    # seeded, or a key deleted by hand — so the two must agree, or first-run
+    # behavior would change the moment the seeder ran.
+    PREF_SCORE_CUTOFF: _IntKnob(default=0, low=0, high=100),
+    PREF_MAX_DISPLAYED: _IntKnob(default=50, low=1, high=200),
+}
+"""Every writable knob, with its range.
+
+The ranges are not cosmetic. A cutoff outside 0-100 empties the feed, and a
+``max_displayed`` below 1 reaches ``ranked_items`` as a negative slice bound,
+which quietly displays *n-1* articles rather than failing. ``ranked_items``
+trusts its ``limit``; this table is where that trust is earned.
+"""
+
+
+async def _knob(store: "StateStore", key: str) -> int:
+    """Read one knob, tolerating a stored value the API would have rejected.
+
+    Preferences are TEXT, and nothing stops a hand-edited row from holding
+    ``"seventy"`` or ``-1``. Both fall back to the default with a warning rather
+    than raising: an unreadable knob must not 500 the feed, and honoring an
+    out-of-range one would mean ``GET /preferences/`` reporting a number that is
+    not the one in effect.
+    """
+
+    knob = _PREFERENCES[key]
+    raw = await store.get_preference(key)
+    if raw is None:
+        return knob.default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "api: preference %s holds a non-numeric value %r; using %d",
+            key, raw, knob.default,
+        )
+        return knob.default
+    if not knob.contains(value):
+        logger.warning(
+            "api: preference %s holds %d, outside %d-%d; using %d",
+            key, value, knob.low, knob.high, knob.default,
+        )
+        return knob.default
+    return value
 
 
 _SCOPES = {"feed": False, "saved": True}
@@ -260,6 +332,94 @@ def _build_saved_router() -> APIRouter:
 
         if not await _store(request).unsave_article(article_id):
             raise _unknown_article(article_id)
+
+    return router
+
+
+def _build_ranked_router() -> APIRouter:
+    router = APIRouter(prefix="/ranked", tags=["feed"])
+
+    @router.get("/")
+    async def list_ranked(
+        request: Request,
+        category: list[str] | None = Query(default=None),
+    ) -> dict[str, Any]:
+        """The gated feed: what is shown, plus what was withheld and why.
+
+        Both knobs are read from ``preferences`` rather than taken as query
+        parameters — the cutoff is a property of the reader, not of the request,
+        so a bookmarked URL cannot pin a stale gate.
+
+        ``displayed`` carries the same :class:`~schemas.article.FeedItem` as
+        ``/feed/`` and ``/saved/``, assembled by the same ``_feed_item``. The
+        three withheld groups are counts and score ranges only: a collapsed row
+        needs to say how many and between what, and rendering it never needs the
+        articles themselves.
+
+        ``?category=`` composes exactly as it does on the feed, narrowing every
+        group rather than only the displayed list.
+        """
+
+        store = _store(request)
+        categories = _selected_categories(request, category)
+        cutoff = await _knob(store, PREF_SCORE_CUTOFF)
+        max_displayed = await _knob(store, PREF_MAX_DISPLAYED)
+
+        result = await store.ranked_items(
+            cutoff=cutoff, limit=max_displayed, categories=categories
+        )
+        return {
+            "cutoff": cutoff,
+            "max_displayed": max_displayed,
+            "total": result["total"],
+            "displayed": [_feed_item(row) for row in result["displayed"]],
+            "above_cutoff": result["above_cutoff"],
+            "below_cutoff": result["below_cutoff"],
+            "unscored": result["unscored"],
+        }
+
+    return router
+
+
+def _build_preferences_router() -> APIRouter:
+    router = APIRouter(prefix="/preferences", tags=["preferences"])
+
+    @router.get("/")
+    async def list_preferences(request: Request) -> dict[str, int]:
+        """Every knob and its effective value.
+
+        One object rather than a per-key GET: the UI draws both controls
+        together, and two round-trips could render a cutoff and a page size read
+        from either side of a write.
+        """
+
+        store = _store(request)
+        return {key: await _knob(store, key) for key in _PREFERENCES}
+
+    @router.put("/{key}", status_code=status.HTTP_204_NO_CONTENT)
+    async def set_preference(key: str, body: PreferenceIn, request: Request) -> None:
+        """Write one knob.
+
+        ``PUT`` because the client states a desired end state, and both
+        rejections are 400s naming what would have been accepted — an unknown
+        key or an out-of-range value is a caller bug, and the caller can only
+        fix it if the response says what the bounds were.
+        """
+
+        knob = _PREFERENCES.get(key)
+        if knob is None:
+            valid = ", ".join(_PREFERENCES)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"unknown preference {key!r}; valid keys: {valid}",
+            )
+        if not knob.contains(body.value):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"invalid {key} {body.value}; valid range: "
+                       f"{knob.low}-{knob.high}",
+            )
+        await _store(request).set_preference(key, str(body.value))
 
     return router
 
@@ -529,6 +689,8 @@ def create_app(
 
     app.include_router(_build_feed_router())
     app.include_router(_build_saved_router())
+    app.include_router(_build_ranked_router())
+    app.include_router(_build_preferences_router())
     app.include_router(_build_articles_router())
     app.include_router(_build_categories_router())
     app.include_router(_build_sources_router())

@@ -151,3 +151,61 @@ async def test_unusable_articles_are_excluded(store: StateStore) -> None:
     result = await store.ranked_items(cutoff=0, limit=10)
 
     assert result["total"] == 1
+
+
+import pytest
+from fastapi.testclient import TestClient
+
+from core.api import create_app
+from core.events import EventBus
+from core.websocket import WebSocketManager
+
+
+@pytest.fixture
+def client(store: StateStore) -> TestClient:
+    bus = EventBus()
+    ws = WebSocketManager()
+    ws.subscribe_to_bus(bus)
+    app = create_app(event_bus=bus, ws_manager=ws, state_store=store,
+                     poller=None, settings=None, mount_static=False,
+                     category_vocabulary=["ai", "finance"],
+                     category_filters=["ai"])
+    return TestClient(app)
+
+
+async def test_ranked_endpoint_reports_the_gating_contract(
+    store: StateStore, client: TestClient
+) -> None:
+    await _seed(store, [("a", 95, 1), ("b", 40, 2), ("c", None, 3)])
+    await store.set_preference("score_cutoff", "70")
+
+    body = client.get("/ranked/").json()
+
+    assert body["cutoff"] == 70
+    assert body["max_displayed"] == 50
+    assert body["total"] == 3
+    assert [i["headline"] for i in body["displayed"]] == ["a"]
+    assert body["below_cutoff"]["count"] == 1
+    assert body["unscored"]["count"] == 1
+
+
+async def test_ranked_items_carry_the_full_feed_item_shape(
+    store: StateStore, client: TestClient
+) -> None:
+    """One DTO assembly, shared with /feed/ and /saved/."""
+    await _seed(store, [("a", 95, 1)])
+
+    item = client.get("/ranked/").json()["displayed"][0]
+
+    assert set(item) >= {"article_id", "headline", "bullets", "url", "source",
+                         "score", "rating", "categories", "saved"}
+    assert item["score"] == 95
+
+
+async def test_ranked_rejects_an_unknown_category(
+    store: StateStore, client: TestClient
+) -> None:
+    await _seed(store, [("a", 95, 1)])
+
+    res = client.get("/ranked/?category=nonsense")
+    assert res.status_code == 400
