@@ -104,6 +104,29 @@ async def _seed_profile_from_file(
 
     await store.seed_profile(PROFILE_VERSION, body)
 
+    # Seeding is insert-if-absent by design — the file must never clobber a
+    # version the reader approved, least of all a distilled one from phase 4.
+    # The cost is that editing profile.md after first boot does nothing, and
+    # doing nothing silently is the part that misleads: the operator changes
+    # their taste, restarts, sees identical scores, and has no reason to suspect
+    # the file was ignored rather than the rubric being unmoved by the edit.
+    stored = await store.latest_profile()
+    if stored is not None and stored[1] != body:
+        failures.append({
+            "component": "profile",
+            "error": (
+                f"{path} differs from the stored profile ({stored[0]}), and the "
+                f"stored one is in effect. Seeding never overwrites an approved "
+                f"profile. To adopt the file's text, delete that row: "
+                f"DELETE FROM profile_versions WHERE version = '{stored[0]}';"
+            ),
+        })
+        logger.warning(
+            "main: %s differs from stored profile %s — the stored one is in "
+            "effect; scores will not reflect the file's edits",
+            path, stored[0],
+        )
+
 
 async def _build_components(
     settings: Settings,
