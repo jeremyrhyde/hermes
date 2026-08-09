@@ -84,3 +84,62 @@ async def test_reseeding_an_unchanged_file_is_silent(
     await _seed_profile_from_file(store, str(path), failures)
 
     assert failures == []
+
+
+async def test_an_approved_distillation_does_not_fake_a_divergence(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """The phase-4 case: an untouched file must stay silent once taste evolves.
+
+    Comparing against "whichever profile is in effect" breaks here. Phase 4
+    appends approved distilled versions and the newest wins, so an unedited
+    profile.md would look changed forever — and the remedy would name the
+    distilled row, whose deletion destroys the only stored copy of the text
+    every score stamped with it was judged against.
+    """
+    path = tmp_path / "profile.md"
+    path.write_text("stated taste", encoding="utf-8")
+    await _seed_profile_from_file(store, str(path), [])
+
+    await store.db.execute(
+        """
+        INSERT INTO profile_versions (version, body, kind, created_at, approved_at)
+        VALUES ('profile-v2-distilled', 'learned taste', 'distilled', ?, ?)
+        """,
+        ("2026-09-01T00:00:00+00:00", "2026-09-01T00:00:00+00:00"),
+    )
+    await store.db.commit()
+
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, str(path), failures)
+
+    assert failures == [], "an untouched file must not report a divergence"
+    assert (await store.latest_profile())[0] == "profile-v2-distilled"
+
+
+async def test_the_remedy_never_names_a_distilled_profile(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """Even when the file IS edited, the fix must target the seeded row.
+
+    Naming the distilled version would advise deleting phase 4's own output.
+    """
+    path = tmp_path / "profile.md"
+    path.write_text("stated taste", encoding="utf-8")
+    await _seed_profile_from_file(store, str(path), [])
+    await store.db.execute(
+        """
+        INSERT INTO profile_versions (version, body, kind, created_at, approved_at)
+        VALUES ('profile-v2-distilled', 'learned taste', 'distilled', ?, ?)
+        """,
+        ("2026-09-01T00:00:00+00:00", "2026-09-01T00:00:00+00:00"),
+    )
+    await store.db.commit()
+
+    path.write_text("edited taste", encoding="utf-8")
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, str(path), failures)
+
+    assert len(failures) == 1
+    assert PROFILE_VERSION in failures[0]["error"]
+    assert "distilled" not in failures[0]["error"]

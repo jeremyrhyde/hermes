@@ -110,21 +110,31 @@ async def _seed_profile_from_file(
     # doing nothing silently is the part that misleads: the operator changes
     # their taste, restarts, sees identical scores, and has no reason to suspect
     # the file was ignored rather than the rubric being unmoved by the edit.
-    stored = await store.latest_profile()
-    if stored is not None and stored[1] != body:
+    # Compared against PROFILE_VERSION specifically, never against "whichever
+    # profile is currently in effect". Those diverge the moment phase 4 approves
+    # a distilled version: the newest-approved row would then differ from an
+    # untouched file, firing this warning on every boot forever and — far worse
+    # — advising deletion of the distilled profile, which is the only stored
+    # copy of the text every score stamped with it was judged against. This row
+    # is the only one seeding could have written, and the only one the file has
+    # any claim on. Once a distillation is in effect the file is history and a
+    # difference is expected, so this correctly falls silent.
+    seeded = await store.profile_body(PROFILE_VERSION)
+    if seeded is not None and seeded != body:
         failures.append({
             "component": "profile",
             "error": (
-                f"{path} differs from the stored profile ({stored[0]}), and the "
-                f"stored one is in effect. Seeding never overwrites an approved "
-                f"profile. To adopt the file's text, delete that row: "
-                f"DELETE FROM profile_versions WHERE version = '{stored[0]}';"
+                f"{path} differs from {PROFILE_VERSION}, which was seeded from "
+                f"it and is what scoring uses. Seeding never overwrites, so the "
+                f"file's edits have no effect. To adopt them, delete the seeded "
+                f"row and restart: "
+                f"DELETE FROM profile_versions WHERE version = '{PROFILE_VERSION}';"
             ),
         })
         logger.warning(
-            "main: %s differs from stored profile %s — the stored one is in "
+            "main: %s differs from seeded profile %s — the stored text is in "
             "effect; scores will not reflect the file's edits",
-            path, stored[0],
+            path, PROFILE_VERSION,
         )
 
 
@@ -264,11 +274,24 @@ async def _build_components(
         if client is None:
             missing.append("ANTHROPIC_API_KEY is not set")
         if profile is None:
-            missing.append(f"no taste profile ({settings.PROFILE_PATH} is absent)")
+            # Deliberately not "is absent". The profile is None for an absent
+            # file, an empty one, or an unreadable one, and the `profile` entry
+            # above already says which. Asserting "absent" here contradicts it
+            # for two of those three, and two /health rows disagreeing is worse
+            # than one saying less.
+            missing.append(f"no taste profile loaded from {settings.PROFILE_PATH}")
+        # What still runs depends on which half is missing. Without a key there
+        # is no summarizer either, so nothing is ingested at all — promising
+        # ingestion here would contradict the `summarizer` entry sitting beside
+        # it.
+        consequence = (
+            "Articles are still ingested and summarized; they stay unscored."
+            if client is not None
+            else "The poller is disabled too, so nothing is ingested."
+        )
         failures.append({
             "component": "scorer",
-            "error": f"scoring is disabled: {'; '.join(missing)}. Articles are "
-                     f"still ingested and summarized; they stay unscored.",
+            "error": f"scoring is disabled: {'; '.join(missing)}. {consequence}",
         })
         logger.error("main: scoring disabled — %s", "; ".join(missing))
         scorer = None

@@ -49,3 +49,20 @@ def test_unknown_preference_key_is_rejected(client: TestClient) -> None:
     res = client.put("/preferences/nonsense", json={"value": 1})
     assert res.status_code == 400
     assert "nonsense" in res.json()["detail"]
+
+
+def test_api_defaults_mirror_the_settings_seeds() -> None:
+    """The unseeded fallback and the seeded value must be the same number.
+
+    `_PREFERENCES` supplies the value when no row exists; `Settings` supplies
+    the value the seeder writes on first run. They are two hardcoded copies of
+    one decision, and the mandated default tests above assert literals — so
+    changing `config.py` alone would leave the suite green while an unseeded
+    app disagreed with a seeded one.
+    """
+    from config import Settings
+    from core.api import PREF_MAX_DISPLAYED, PREF_SCORE_CUTOFF, _PREFERENCES
+
+    settings = Settings()
+    assert _PREFERENCES[PREF_SCORE_CUTOFF].default == settings.DEFAULT_SCORE_CUTOFF
+    assert _PREFERENCES[PREF_MAX_DISPLAYED].default == settings.DEFAULT_MAX_DISPLAYED

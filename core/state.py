@@ -708,6 +708,25 @@ class StateStore:
         row = await cur.fetchone()
         return (row["version"], row["body"]) if row else None
 
+    async def profile_body(self, version: str) -> str | None:
+        """One specific version's body, or ``None`` if it was never written.
+
+        Distinct from :meth:`latest_profile` on purpose. That answers "what is
+        scoring against right now", which is a moving target — phase 4 appends
+        approved distilled versions and the newest wins. This answers "what does
+        version X say", which is fixed.
+
+        The seeder needs the second question. Asking the first would mean
+        comparing ``profile.md`` against whatever is newest, so an untouched file
+        would look changed the moment a distillation was approved.
+        """
+
+        cur = await self.db.execute(
+            "SELECT body FROM profile_versions WHERE version = ?", (version,)
+        )
+        row = await cur.fetchone()
+        return row["body"] if row else None
+
     async def seed_profile(self, version: str, body: str) -> None:
         """Insert only if absent, so the file never clobbers an edited profile.
 
