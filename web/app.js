@@ -1,7 +1,7 @@
 /* Hermes web UI — single Alpine.js state object.
  *
  * Architecture:
- *   - REST: fetch() against /feed/, /sources/ and /health
+ *   - REST: fetch() against /ranked/, /saved/, /sources/ and /health
  *   - Realtime: WebSocket /ws receives Event JSON; applyEvent() patches state
  *   - applyEvent tolerates unknown event types: log and ignore, never throw
  *
@@ -13,7 +13,33 @@ function app() {
   return {
     // ---------------------------------------------------------------- state
     tab: 'feed',
+    // The Feed tab's list: /ranked/'s `displayed`, already ordered and gated by
+    // the server. Never re-sorted or patched here — see applyEvent.
     items: [],
+    // Everything /ranked/ says about the gate: the knobs in effect, the size of
+    // the whole population, and the three withheld groups. Seeded with the
+    // server's own defaults so the header reads sensibly before the first
+    // response, and re-normalized on every one — `high`/`low` are null for an
+    // empty group, and a group key the server never sent must not become
+    // `undefined` in a template.
+    gating: {
+      cutoff: 0,
+      max_displayed: 50,
+      total: 0,
+      above_cutoff: { count: 0, high: null, low: null },
+      below_cutoff: { count: 0, high: null, low: null },
+      unscored: { count: 0, high: null, low: null },
+    },
+    // The server's rejection of a knob write, verbatim. Empty when the knobs
+    // are in a state the server accepted.
+    knobError: '',
+    // Preference key -> the field /ranked/ reports it under. The cutoff has two
+    // spellings across the two endpoints — `score_cutoff` is a preferences key
+    // among others, `cutoff` is unambiguous inside a ranking — and this is the
+    // one place they meet. Reading `gating[key]` directly instead yields
+    // `undefined`, which as an input value clears the box rather than
+    // reverting it.
+    _knobField: { score_cutoff: 'cutoff', max_displayed: 'max_displayed' },
     // The Saved list. Loaded on first switch to the tab, not at init — most
     // sessions never open it.
     savedItems: [],
@@ -97,9 +123,14 @@ function app() {
     async refreshFiltered(nextTab = this.tab) {
       const seq = ++this._filterSeq;
       const saved = nextTab === 'saved';
-      const listPath = saved ? '/saved/' : '/feed/';
+      // The Feed reads /ranked/, which takes no limit: how many articles are
+      // displayed is the max_displayed knob's business, and a query parameter
+      // beside it would be a second, contradicting answer.
+      const listPath = saved
+        ? `/saved/?limit=100${this._categoryQuery()}`
+        : `/ranked/${this._categoryQuery('?')}`;
       const requests = [
-        this._json(`${listPath}?limit=100${this._categoryQuery()}`),
+        this._json(listPath),
         this._json(`/categories/?scope=${saved ? 'saved' : 'feed'}${this._categoryQuery()}`),
       ];
       // Unfiltered and capped at one row: this asks "is anything pinned at
@@ -117,8 +148,20 @@ function app() {
         return;
       }
       this.tab = nextTab;
-      if (saved) this.savedItems = list.value || [];
-      else this.items = list.value || [];
+      if (saved) {
+        this.savedItems = list.value || [];
+      } else {
+        const ranked = list.value || {};
+        this.items = ranked.displayed || [];
+        this.gating = {
+          cutoff: ranked.cutoff ?? 0,
+          max_displayed: ranked.max_displayed ?? 0,
+          total: ranked.total ?? 0,
+          above_cutoff: this._group(ranked.above_cutoff),
+          below_cutoff: this._group(ranked.below_cutoff),
+          unscored: this._group(ranked.unscored),
+        };
+      }
 
       if (categories.status === 'fulfilled') {
         this.categoryFilters = categories.value?.filters || [];
@@ -141,13 +184,63 @@ function app() {
       return this.tab === 'saved' ? this.savedItems : this.items;
     },
 
+    /* The withheld groups as rendered rows, empty ones omitted.
+     *
+     * Built here rather than in three near-identical bits of markup because
+     * the null handling is the whole job: an empty group carries
+     * high === low === null, and a row that interpolated those would read
+     * "(null → null)". A group with a count of 0 has no row at all. */
+    get gateRows() {
+      const g = this.gating;
+      const rows = [];
+      if (g.above_cutoff.count > 0) {
+        rows.push({
+          key: 'above',
+          label: `${g.above_cutoff.count} more above cutoff${this._range(g.above_cutoff)}`,
+        });
+      }
+      if (g.below_cutoff.count > 0) {
+        rows.push({
+          key: 'below',
+          label: `${g.below_cutoff.count} below cutoff${this._range(g.below_cutoff)}`,
+        });
+      }
+      if (g.unscored.count > 0) {
+        // No range: an unscored article has no score to bound.
+        rows.push({ key: 'unscored', label: `${g.unscored.count} not yet scored` });
+      }
+      return rows;
+    },
+
     // ---------------------------------------------------------------- helpers
     async _json(path, opts = {}) {
       const res = await fetch(path, opts);
-      if (!res.ok) throw new Error(`${path} ${res.status}`);
+      if (!res.ok) {
+        const err = new Error(`${path} ${res.status}`);
+        // The knob controls show the server's rejection verbatim rather than
+        // duplicating its ranges client-side, where the two would drift.
+        const body = await res.json().catch(() => null);
+        err.detail = body?.detail ?? null;
+        throw err;
+      }
       // 204 No Content has no body
       if (res.status === 204) return null;
       return res.json();
+    },
+
+    /* One withheld group, with every key present. The server always sends
+     * count/high/low, but a shape it never sent must still render blank rather
+     * than "undefined" — the same defensiveness the WebSocket payloads need. */
+    _group(group) {
+      return { count: 0, high: null, low: null, ...(group || {}) };
+    },
+
+    /* " (74 → 70)" for a group's score range, or '' when it has none. */
+    _range(group) {
+      const { high, low } = group;
+      if (high === null || high === undefined) return '';
+      if (low === null || low === undefined) return '';
+      return high === low ? ` (${high})` : ` (${high} → ${low})`;
     },
 
     /* Repeated ?category= params for the active selection, or '' when nothing
@@ -245,12 +338,46 @@ function app() {
       return this.refreshFiltered();
     },
 
-    /* AND semantics: the article must carry *every* active filter, not any of
-     * them. Used to decide whether a live-arriving card belongs in the
-     * current view. An untagged article satisfies only the empty selection. */
-    matchesSelection(item) {
-      const categories = item?.categories || [];
-      return this.selected.every(name => categories.includes(name));
+    /* Write one gating knob, then repaint from the server.
+     *
+     * *el* is the input itself, not its value, because the revert has to reach
+     * the DOM: a rejected 300 leaves `gating.cutoff` exactly as it was, so
+     * nothing about the bound state changes and Alpine has no reason to put the
+     * box back — the field would keep showing a number that is not in effect.
+     *
+     * The new gating is *never* computed here. The cutoff decides which of
+     * three groups every article lands in, and re-deriving that client-side is
+     * the same duplicated gate the refetch exists to avoid. */
+    async setKnob(key, el) {
+      const effective = this.gating[this._knobField[key]];
+      const raw = el.value.trim();
+      const value = Number(raw);
+      this.knobError = '';
+      // The blank check is not redundant: a number input reports anything it
+      // cannot parse as '', and Number('') is 0 — a valid cutoff. Without it,
+      // clearing the box or typing letters would quietly drop the cutoff to 0
+      // instead of putting back the number that is in effect.
+      if (raw === '' || !Number.isInteger(value) || value === effective) {
+        el.value = effective;  // blank, junk, or a no-op edit
+        return;
+      }
+      // Anything already in flight described the *old* knob, so retire it here
+      // rather than after the PUT: a /ranked/ response that resolves mid-write
+      // would otherwise paint a gate the user has already moved off.
+      this._filterSeq++;
+      try {
+        await this._json(`/preferences/${key}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value }),
+        });
+      } catch (err) {
+        console.error('setKnob', key, err);
+        this.knobError = err.detail || 'Could not save that setting.';
+        el.value = effective;
+        return;
+      }
+      return this.refreshFiltered();
     },
 
     toggle(item) {
@@ -363,29 +490,20 @@ function app() {
       if (!event || !event.type) return;
 
       switch (event.type) {
-        case 'article_summarized': {
-          const item = event.data?.item;
-          if (!item) break;
-          // A missing key must render an unstarred card, never `undefined`:
-          // arriving articles are never auto-saved, so the emitter has no
-          // reason to send `saved` and the client must not assume it.
-          const normalized = {
-            score: null, rating: null, badges: [], categories: [],
-            saved: false, ...item,
-          };
-          const idx = this.items.findIndex(i => i.article_id === item.article_id);
-          if (this.matchesSelection(normalized)) {
-            if (idx >= 0) this.items.splice(idx, 1, normalized);
-            else this.items.unshift(normalized);
-          } else if (idx >= 0) {
-            // Was visible, no longer matches — drop it rather than leave a
-            // stale card in a filtered view.
-            this.items.splice(idx, 1);
-          }
-          // Counts shift even when the article itself is filtered out.
-          this._refreshCounts();
+        // Refetch rather than patch. The feed is ordered and gated by the
+        // server, so splicing a card in would mean re-deriving the cutoff, the
+        // display cap and the three group counts here — a second copy of the
+        // gate, and the one that drifts. It would also place the article
+        // wrongly: summarized arrives *before* scored, so the card would be
+        // ranked by a score it does not have yet and then never move.
+        //
+        // On the Saved tab this refetches /saved/ and the counts, which is
+        // still right: a newly summarized article changes the category counts
+        // even when it changes nothing about what is pinned.
+        case 'article_summarized':
+        case 'article_scored':
+          this.refreshFiltered();
           break;
-        }
 
         case 'source_polled':
           this._json('/sources/').then(rows => { this.sources = rows || []; })
@@ -402,7 +520,6 @@ function app() {
           break;
 
         case 'article_ingested':
-        case 'article_scored':
         case 'profile_proposed':
           break;
 

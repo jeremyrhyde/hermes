@@ -357,6 +357,67 @@ main {
   border-radius: var(--radius-lg);
 }
 
+/* --------------------------------------------------------------- gating */
+
+/* The knob row sits inside .section-title, so it inherits that rule's
+   uppercase and letter-spacing — deliberately, so the Feed's header reads as
+   the same kind of label the other tabs carry. The inputs opt back out: a
+   tracked-out digit in a 4rem box is hard to scan. */
+.knobs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.knob {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.knob-input {
+  width: 4.25rem;
+  min-height: 32px;
+  padding: 0 var(--space-2);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.knob-input:focus { outline: none; border-color: var(--color-accent); }
+
+.knob-sep { color: var(--color-border); }
+
+.knob-error { color: var(--color-danger); text-transform: none; }
+
+/* The withheld groups. No hover, no cursor, no focus ring: nothing here is
+   clickable in this phase, and affording otherwise would promise a disclosure
+   that does not exist. */
+.gate-list {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+}
+
+.gate-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-dim);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.gate-caret { color: var(--color-border); }
+
 /* --------------------------------------------------------------- feed */
 
 .feed {

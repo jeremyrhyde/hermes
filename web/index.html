@@ -124,21 +124,57 @@
          would be the copy that stops getting updated. `visibleItems` picks
          the list; nothing below it knows which tab it is rendering. -->
     <section x-show="tab !== 'sources'" role="tabpanel" class="panel">
+      <!-- The Feed's header is the gate's control panel: both knobs and how
+           much of the population survived them. Saved has no gate, so it keeps
+           the plain count. Two x-shows rather than one x-if each, because the
+           number inputs must survive a tab switch with their focus intact. -->
       <div class="section-head">
         <h2 class="section-title">
-          <span x-text="`${visibleItems.length} ${tab === 'saved' ? 'saved ' : ''}article${visibleItems.length === 1 ? '' : 's'}`"></span>
+          <span x-show="tab === 'saved'"
+                x-text="`${savedItems.length} saved article${savedItems.length === 1 ? '' : 's'}`"></span>
+          <span class="knobs" x-show="tab === 'feed'">
+            <!-- :value, not x-model: a rejected write leaves the bound state
+                 untouched, so setKnob puts the box back by hand.
+                 aria-label overrides the wrapping <label>, so each one starts
+                 with that label's visible word — a voice-control user saying
+                 "cutoff" must still hit the box. -->
+            <label class="knob">cutoff
+              <input type="number" class="knob-input" min="0" max="100" step="1"
+                     aria-label="cutoff — lowest score shown"
+                     :value="gating.cutoff"
+                     @change="setKnob('score_cutoff', $event.target)">
+            </label>
+            <span class="knob-sep" aria-hidden="true">·</span>
+            <label class="knob">showing
+              <input type="number" class="knob-input" min="1" max="200" step="1"
+                     aria-label="showing — most articles displayed"
+                     :value="gating.max_displayed"
+                     @change="setKnob('max_displayed', $event.target)">
+            </label>
+            <span class="knob-sep" aria-hidden="true">·</span>
+            <span x-text="`${items.length} of ${gating.total} article${gating.total === 1 ? '' : 's'}`"></span>
+          </span>
         </h2>
         <button class="btn btn-quiet" @click="refreshAll()">Refresh</button>
       </div>
 
+      <p class="hint knob-error" role="status" x-show="knobError" x-text="knobError"></p>
+
       <!-- Two distinct empty states per tab. "Nothing yet" is about an empty
            database; a filtered miss means the user has articles, just none
            matching, and needs a way back rather than setup instructions. -->
-      <template x-if="tab === 'feed' && items.length === 0 && selected.length === 0">
+      <template x-if="tab === 'feed' && items.length === 0 && selected.length === 0 && gating.total === 0">
         <p class="empty">
           Nothing yet. Add feeds to <code>sources.yaml</code>, then
           <code>make poll-now ID=&lt;source-id&gt;</code>.
         </p>
+      </template>
+
+      <!-- Articles exist; the gate withheld all of them. Setup instructions
+           would be wrong here, and the rows below already say which group
+           swallowed them — cutoff or not-yet-scored. -->
+      <template x-if="tab === 'feed' && items.length === 0 && selected.length === 0 && gating.total > 0">
+        <p class="empty">Nothing is on display — the rows below say why.</p>
       </template>
 
       <template x-if="tab === 'feed' && items.length === 0 && selected.length > 0">
@@ -214,6 +250,20 @@
                 </div>
               </div>
             </div>
+          </li>
+        </template>
+      </ul>
+
+      <!-- What the gate withheld. Count-only and non-expanding in this phase:
+           the server sends each group's size and score range, not its
+           articles, so there is nothing behind these rows to open. They are
+           therefore plain text, not buttons — a caret you cannot click is a
+           smaller lie than a button that does nothing. -->
+      <ul class="gate-list" x-show="tab === 'feed' && gateRows.length > 0">
+        <template x-for="row in gateRows" :key="row.key">
+          <li class="gate-row">
+            <span class="gate-caret" aria-hidden="true">▸</span>
+            <span x-text="row.label"></span>
           </li>
         </template>
       </ul>
