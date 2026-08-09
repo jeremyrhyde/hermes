@@ -228,3 +228,16 @@ async def test_interactions_are_not_deduplicated(store: StateStore) -> None:
 async def test_interaction_for_an_unknown_article_reports_false(store: StateStore) -> None:
     await store.upsert_source(CFG)
     assert await store.record_interaction(9999, "expand", NOW) is False
+
+
+async def test_a_rerating_with_a_colliding_timestamp_still_wins(
+    store: StateStore,
+) -> None:
+    """Same append-only tie-break as scores; same silent-discard failure."""
+    await store.upsert_source(CFG)
+    article_id = await _article(store)
+
+    await store.rate_article(article_id, 1, NOW)
+    await store.rate_article(article_id, -1, NOW)  # same timestamp
+
+    assert (await store.feed_items())[0]["rating"] == -1

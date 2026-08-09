@@ -116,3 +116,53 @@ async def test_seeding_never_clobbers_an_existing_profile(store: StateStore) -> 
 
 async def test_latest_profile_is_none_when_unseeded(store: StateStore) -> None:
     assert await store.latest_profile() is None
+
+
+async def test_a_rescore_with_a_colliding_timestamp_still_wins(
+    store: StateStore,
+) -> None:
+    """Both score tables are append-only, so "latest" needs a tie-break.
+
+    Without `id DESC` a colliding `created_at` resolves by rowid *ascending*
+    and the OLDER row wins — the re-score is silently discarded, which is the
+    hardest kind of failure to notice. A phase-4 batch re-score stamping one
+    `now` across the whole run is exactly how the collision arises.
+    """
+    await store.upsert_source(CFG)
+    article_id = await _article(store, "a")
+
+    await store.save_score(article_id, _score(10), NOW)
+    await store.save_score(article_id, _score(90), NOW)  # same timestamp
+
+    assert (await store.feed_items())[0]["score"] == 90
+
+
+async def test_seeded_profiles_are_approved_on_write(store: StateStore) -> None:
+    """A hand-written profile has nobody but its author to approve it."""
+    await store.seed_profile("profile-v1", "body")
+
+    cur = await store.db.execute("SELECT approved_at, kind FROM profile_versions")
+    row = await cur.fetchone()
+    assert row["approved_at"] is not None
+    assert row["kind"] == "stated"
+
+
+async def test_an_unapproved_profile_is_never_returned(store: StateStore) -> None:
+    """Spec: a NULL approved_at means proposed, not active.
+
+    Phase 4 proposes distilled versions for review. Without this filter the
+    first proposal would become the live profile the moment it was written,
+    silently changing what every later score means — which is precisely what
+    the approval gate exists to prevent.
+    """
+    await store.seed_profile("profile-v1", "approved body")
+    await store.db.execute(
+        """
+        INSERT INTO profile_versions (version, body, kind, created_at, approved_at)
+        VALUES ('profile-v2', 'proposed body', 'distilled', ?, NULL)
+        """,
+        (LATER.isoformat(),),
+    )
+    await store.db.commit()
+
+    assert (await store.latest_profile()) == ("profile-v1", "approved body")

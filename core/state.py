@@ -591,15 +591,28 @@ class StateStore:
     # Taste profiles
     # ------------------------------------------------------------------
     async def latest_profile(self) -> tuple[str, str] | None:
-        """The newest profile version and its body, or ``None`` if unseeded.
+        """The newest *approved* profile version and its body, or ``None``.
 
         A query rather than a single-row lookup: phase 4 appends distilled
-        versions alongside the stated one, so "current" is always the most
-        recently created row, never the only row.
+        versions alongside the stated one, so "current" is the most recently
+        created row — but only among approved ones.
+
+        ``approved_at IS NOT NULL`` is the whole point of the approval gate. The
+        spec defines a NULL ``approved_at`` as *proposed, not active*, so
+        without this clause the first distillation phase 4 proposes would become
+        the live profile the moment it was written, before anyone reviewed it —
+        silently changing what every subsequent score means. Seeded profiles are
+        approved on write (there is nobody but the author to approve a
+        hand-written one), so this filter excludes nothing today; it exists so
+        that phase 4 cannot forget it.
         """
 
         cur = await self.db.execute(
-            "SELECT version, body FROM profile_versions ORDER BY created_at DESC LIMIT 1"
+            """
+            SELECT version, body FROM profile_versions
+             WHERE approved_at IS NOT NULL
+             ORDER BY created_at DESC, rowid DESC LIMIT 1
+            """
         )
         row = await cur.fetchone()
         return (row["version"], row["body"]) if row else None
@@ -700,10 +713,17 @@ class StateStore:
                    src.type        AS source_type,
                    (SELECT value FROM ratings r
                      WHERE r.article_id = a.id
-                     ORDER BY r.created_at DESC LIMIT 1) AS rating,
+                     ORDER BY r.created_at DESC, r.id DESC LIMIT 1) AS rating,
                    (SELECT score FROM scores sc
                      WHERE sc.article_id = a.id
-                     ORDER BY sc.created_at DESC LIMIT 1) AS score
+                     -- Tie-break on id, not just timestamp. Both tables are
+                     -- append-only, so "latest" on a colliding created_at
+                     -- otherwise resolves by rowid *ascending* and the OLDER
+                     -- row wins — a re-score or re-rating silently discarded,
+                     -- which is the hardest kind of failure to notice. A batch
+                     -- re-score stamping one `now` across the run is exactly
+                     -- how that collision happens.
+                     ORDER BY sc.created_at DESC, sc.id DESC LIMIT 1) AS score
               FROM articles a
               JOIN summaries s ON s.article_id = a.id
               JOIN sources  src ON src.id = a.source_id
