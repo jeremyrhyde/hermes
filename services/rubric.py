@@ -31,10 +31,11 @@ PRIMARY CRITERION — lens interaction.
 An article earns its score chiefly by treating a subject through more than one \
 lens, where the lenses interact. Interaction means the second domain changes \
 the conclusion about the first: it constrains it, reverses it, explains a \
-mechanism behind it, or bounds when it holds. An article that explains how \
-export controls compress a manufacturer's margins is doing this. An article \
-that discusses AI and separately discusses markets is not, however competent \
-each part is. Touching many domains with no bearing of one on another earns \
+mechanism behind it, or bounds when it holds. An article showing that a \
+labour-supply constraint reverses the obvious reading of a housing-starts \
+figure is doing this. An article that treats one domain and then separately \
+treats another is not, however competent each part is. Touching many domains \
+with no bearing of one on another earns \
 nothing here — breadth is not interaction, and an article that merely covers \
 ground scores low no matter how much ground it covers.
 
