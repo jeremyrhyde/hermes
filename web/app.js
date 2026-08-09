@@ -14,6 +14,13 @@ function app() {
     // ---------------------------------------------------------------- state
     tab: 'feed',
     items: [],
+    // The Saved list. Loaded on first switch to the tab, not at init — most
+    // sessions never open it.
+    savedItems: [],
+    // Whether *anything* is pinned, independent of the active filters. The
+    // Saved filter row hides entirely when nothing is, and savedItems.length
+    // cannot answer that question while a filter is narrowing it.
+    hasAnySaved: false,
     sources: [],
     // One entry per *configured* filter, including zero counts — a dead-end
     // category is rendered disabled rather than vanishing mid-interaction.
@@ -48,27 +55,13 @@ function app() {
 
     async refreshAll() {
       // Parallel fetch so one failing endpoint doesn't blank the rest of the
-      // page. Add new endpoints to this array as the API grows.
-      const seq = ++this._filterSeq;
-      const [feed, categories, sources, health] = await Promise.allSettled([
-        this._json(`/feed/?limit=100${this._categoryQuery()}`),
-        this._json(`/categories/${this._categoryQuery('?')}`),
+      // page. Sources and health don't depend on the selection or the tab, so
+      // they run alongside refreshFiltered rather than inside it.
+      const filtered = this.refreshFiltered();
+      const [sources, health] = await Promise.allSettled([
         this._json('/sources/'),
         this._json('/health'),
       ]);
-
-      // Sources and health don't depend on the selection, so they apply even
-      // if a newer filter request has superseded this one.
-      if (seq === this._filterSeq) {
-        if (feed.status === 'fulfilled') this.items = feed.value || [];
-        else console.error('refreshAll: /feed/', feed.reason);
-
-        if (categories.status === 'fulfilled') {
-          this.categoryFilters = categories.value?.filters || [];
-        } else {
-          console.error('refreshAll: /categories/', categories.reason);
-        }
-      }
 
       if (sources.status === 'fulfilled') this.sources = sources.value || [];
       else console.error('refreshAll: /sources/', sources.reason);
@@ -78,26 +71,74 @@ function app() {
       } else {
         console.error('refreshAll: /health', health.reason);
       }
+
+      await filtered;
     },
 
-    /* Refetch the two endpoints the selection parameterizes. Sources and
-     * health don't vary with it, so a filter click leaves them alone. */
-    async refreshFiltered() {
+    /* Refetch the endpoints the selection and the active tab parameterize.
+     * Sources and health vary with neither, so a filter click or a tab switch
+     * leaves them alone.
+     *
+     * A tab switch issues the same request pair a filter click does, which is
+     * why it goes through here and inherits the _filterSeq guard: switching
+     * while the previous tab's responses are in flight is exactly the
+     * out-of-order case, and a late response would otherwise paint one tab's
+     * counts over the other's.
+     *
+     * *nextTab* is why the tab flip lives here rather than in switchTab. An
+     * x-show whose value goes false then true again inside one animation frame
+     * stays hidden forever: Alpine's hide path defers through queueMicrotask ->
+     * requestAnimationFrame -> a promise chain while its show path is a bare
+     * requestAnimationFrame, so the late hide lands last and nothing cancels
+     * it. Flipping the tab before its data arrived did exactly that — the list
+     * and the filter row both flapped against a momentarily empty savedItems —
+     * and left the Saved tab blank. Applying the tab and its data in one
+     * synchronous block means every expression sees one transition, not two. */
+    async refreshFiltered(nextTab = this.tab) {
       const seq = ++this._filterSeq;
-      const [feed, categories] = await Promise.allSettled([
-        this._json(`/feed/?limit=100${this._categoryQuery()}`),
-        this._json(`/categories/${this._categoryQuery('?')}`),
-      ]);
+      const saved = nextTab === 'saved';
+      const listPath = saved ? '/saved/' : '/feed/';
+      const requests = [
+        this._json(`${listPath}?limit=100${this._categoryQuery()}`),
+        this._json(`/categories/?scope=${saved ? 'saved' : 'feed'}${this._categoryQuery()}`),
+      ];
+      // Unfiltered and capped at one row: this asks "is anything pinned at
+      // all", which the filtered list above cannot answer.
+      if (saved) requests.push(this._json('/saved/?limit=1'));
+
+      const [list, categories, anySaved] = await Promise.allSettled(requests);
       if (seq !== this._filterSeq) return;  // superseded by a later click
 
-      if (feed.status === 'fulfilled') this.items = feed.value || [];
-      else console.error('refreshFiltered: /feed/', feed.reason);
+      // All of it or none of it. Counts that describe a list the user cannot
+      // see are worse than stale counts, and a tab that switched to a list
+      // that failed to load would render "nothing here" as if that were true.
+      if (list.status !== 'fulfilled') {
+        console.error(`refreshFiltered: ${listPath}`, list.reason);
+        return;
+      }
+      this.tab = nextTab;
+      if (saved) this.savedItems = list.value || [];
+      else this.items = list.value || [];
 
       if (categories.status === 'fulfilled') {
         this.categoryFilters = categories.value?.filters || [];
       } else {
         console.error('refreshFiltered: /categories/', categories.reason);
       }
+
+      if (anySaved?.status === 'fulfilled') {
+        this.hasAnySaved = (anySaved.value || []).length > 0;
+      } else if (anySaved) {
+        console.error('refreshFiltered: /saved/', anySaved.reason);
+      }
+    },
+
+    // ---------------------------------------------------------------- derived
+
+    /* Which list the shared card template renders. Both tabs go through this
+     * so there is exactly one copy of the card markup. */
+    get visibleItems() {
+      return this.tab === 'saved' ? this.savedItems : this.items;
     },
 
     // ---------------------------------------------------------------- helpers
@@ -139,6 +180,58 @@ function app() {
     },
 
     // ---------------------------------------------------------------- user actions
+
+    /* The selection is shared across tabs on purpose: the filter row is the
+     * same row, so having it silently mean something different on each tab
+     * would be the surprise. Sources parameterizes nothing, so switching to it
+     * refetches nothing. */
+    switchTab(name) {
+      if (this.tab === name) return;
+      if (name === 'sources') {  // parameterizes nothing, so nothing to fetch
+        this.tab = name;
+        return;
+      }
+      // refreshFiltered flips the tab once the list is in hand; see its note on
+      // why the two cannot be separated.
+      return this.refreshFiltered(name);
+    },
+
+    /* Optimistic: flip the star now, reconcile with the server after.
+     *
+     * On the Saved tab, unstarring also removes the card, so reverting means
+     * putting the item back at its original index — restoring a star on a card
+     * that is no longer rendered would leave the failure invisible. */
+    async toggleSaved(item) {
+      const next = !item.saved;
+      const list = this.visibleItems;
+      const idx = list.indexOf(item);
+      const removing = !next && this.tab === 'saved' && idx >= 0;
+
+      item.saved = next;
+      if (removing) list.splice(idx, 1);
+
+      try {
+        await this._json(`/saved/${item.article_id}`, {
+          method: next ? 'POST' : 'DELETE',
+        });
+        if (next) this.hasAnySaved = true;
+        else if (this.tab === 'saved' && this.savedItems.length === 0) {
+          this.hasAnySaved = false;
+        }
+        if (next && this.tab === 'saved' && !this.savedItems.includes(item)) {
+          // Re-starred, on the Saved tab, a card an earlier click had already
+          // removed from the list. Where it belongs now is the server's call —
+          // reload rather than guess an index. Reloads the counts too, so the
+          // refresh below would be redundant.
+          return this.refreshFiltered();
+        }
+        this._refreshCounts();
+      } catch (err) {
+        console.error('toggleSaved', err);
+        item.saved = !next;
+        if (removing) list.splice(idx, 0, item);
+      }
+    },
 
     toggleCategory(name) {
       const idx = this.selected.indexOf(name);
@@ -207,7 +300,8 @@ function app() {
 
     _refreshCounts() {
       const seq = this._filterSeq;
-      return this._json(`/categories/${this._categoryQuery('?')}`)
+      const scope = this.tab === 'saved' ? 'saved' : 'feed';
+      return this._json(`/categories/?scope=${scope}${this._categoryQuery()}`)
         .then(data => {
           if (seq !== this._filterSeq) return;  // selection moved on
           this.categoryFilters = data?.filters || [];
@@ -230,8 +324,12 @@ function app() {
         case 'article_summarized': {
           const item = event.data?.item;
           if (!item) break;
+          // A missing key must render an unstarred card, never `undefined`:
+          // arriving articles are never auto-saved, so the emitter has no
+          // reason to send `saved` and the client must not assume it.
           const normalized = {
-            score: null, rating: null, badges: [], categories: [], ...item,
+            score: null, rating: null, badges: [], categories: [],
+            saved: false, ...item,
           };
           const idx = this.items.findIndex(i => i.article_id === item.article_id);
           if (this.matchesSelection(normalized)) {

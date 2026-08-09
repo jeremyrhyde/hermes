@@ -372,14 +372,26 @@ main {
 .feed-item:last-child { border-bottom: 0; }
 .feed-item.open { background: var(--color-surface-2); }
 
+/* Header row: the expand button and the star as siblings. They cannot nest —
+   a button inside a button is invalid markup. */
+.feed-row {
+  display: flex;
+  align-items: flex-start;
+  background: var(--color-surface);
+}
+
+.feed-row:hover { background: var(--color-surface-2); }
+.feed-item.open .feed-row { background: var(--color-surface-2); }
+
 .feed-head {
   display: flex;
   align-items: flex-start;
   gap: var(--space-3);
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   min-height: var(--tap-min);
   padding: var(--space-3) var(--space-4);
-  background: var(--color-surface);
+  background: none;
   border: 0;
   color: var(--color-text);
   font: inherit;
@@ -387,7 +399,25 @@ main {
   cursor: pointer;
 }
 
-.feed-head:hover { background: var(--color-surface-2); }
+/* The star inherits `fill` down into the <use> content, which is why the
+   symbol carries no fill attribute of its own. */
+.star {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--color-text-dim);
+  fill: none;
+  cursor: pointer;
+}
+
+.star:hover { color: var(--color-text); }
+.star.on { color: var(--color-accent); fill: currentColor; }
 
 .feed-score {
   flex: none;

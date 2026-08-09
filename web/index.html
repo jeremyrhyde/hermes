@@ -22,6 +22,11 @@
       <path d="M12 9v4"/>
       <path d="M12 17h.01"/>
     </symbol>
+    <!-- No fill/stroke attributes on the path: a presentation attribute beats
+         an inherited value, so the star could not then be filled from CSS. -->
+    <symbol id="icon-star" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M11.5 3.3a.6.6 0 0 1 1 0l2.4 5a.6.6 0 0 0 .5.3l5.4.8c.5.1.7.7.3 1l-3.9 3.8a.6.6 0 0 0-.2.6l1 5.4c.1.5-.5.9-.9.6l-4.8-2.5a.6.6 0 0 0-.6 0l-4.8 2.5c-.4.3-1-.1-.9-.6l1-5.4a.6.6 0 0 0-.2-.6l-4-3.8c-.3-.3-.1-.9.4-1l5.4-.8a.6.6 0 0 0 .5-.3Z"/>
+    </symbol>
   </svg>
 
   <!-- ------------------------------------------------------------------ -->
@@ -46,19 +51,29 @@
   <nav class="tabs" role="tablist">
     <button role="tab" :aria-selected="tab === 'feed'"
             :class="{ active: tab === 'feed' }"
-            @click="tab = 'feed'">Feed</button>
+            @click="switchTab('feed')">Feed</button>
+    <button role="tab" :aria-selected="tab === 'saved'"
+            :class="{ active: tab === 'saved' }"
+            @click="switchTab('saved')">Saved</button>
     <button role="tab" :aria-selected="tab === 'sources'"
             :class="{ active: tab === 'sources' }"
-            @click="tab = 'sources'">Sources</button>
+            @click="switchTab('sources')">Sources</button>
   </nav>
 
   <!-- ------------------------------------------------------------------ -->
-  <!-- Category filters — Feed tab only, and only when the API offers any. -->
+  <!-- Category filters — Feed and Saved, and only when the API offers any. -->
   <!-- A zero-count filter is disabled, never hidden: a button vanishing   -->
   <!-- mid-interaction reads as a bug. A selected one stays clickable so   -->
   <!-- the selection is always reversible.                                 -->
+  <!--                                                                     -->
+  <!-- On Saved the row also hides when *nothing at all* is pinned, not    -->
+  <!-- merely when nothing matches: every count would be 0, so a fully     -->
+  <!-- disabled row above "Nothing saved yet" would read as broken rather  -->
+  <!-- than empty.                                                         -->
   <!-- ------------------------------------------------------------------ -->
-  <div class="filter-bar" x-show="tab === 'feed' && categoryFilters.length > 0">
+  <div class="filter-bar"
+       x-show="tab !== 'sources' && categoryFilters.length > 0
+               && (tab !== 'saved' || hasAnySaved)">
     <div class="filter-row">
       <div class="filter-scroll" role="group" aria-label="Filter by category">
         <template x-for="f in categoryFilters" :key="f.category">
@@ -96,34 +111,52 @@
     <!-- ---------------------------------------------------------------- -->
     <!-- Feed                                                             -->
     <!-- ---------------------------------------------------------------- -->
-    <section x-show="tab === 'feed'" role="tabpanel" class="panel">
+    <!-- One panel, one card template, both lists. Alpine has no component
+         system without a build step, so a second copy of the card markup
+         would be the copy that stops getting updated. `visibleItems` picks
+         the list; nothing below it knows which tab it is rendering. -->
+    <section x-show="tab !== 'sources'" role="tabpanel" class="panel">
       <div class="section-head">
         <h2 class="section-title">
-          <span x-text="`${items.length} article${items.length === 1 ? '' : 's'}`"></span>
+          <span x-text="`${visibleItems.length} ${tab === 'saved' ? 'saved ' : ''}article${visibleItems.length === 1 ? '' : 's'}`"></span>
         </h2>
         <button class="btn btn-quiet" @click="refreshAll()">Refresh</button>
       </div>
 
-      <!-- Two distinct empty states. "Nothing yet" is about an empty
+      <!-- Two distinct empty states per tab. "Nothing yet" is about an empty
            database; a filtered miss means the user has articles, just none
            matching, and needs a way back rather than setup instructions. -->
-      <template x-if="items.length === 0 && selected.length === 0">
+      <template x-if="tab === 'feed' && items.length === 0 && selected.length === 0">
         <p class="empty">
           Nothing yet. Add feeds to <code>sources.yaml</code>, then
           <code>make poll-now ID=&lt;source-id&gt;</code>.
         </p>
       </template>
 
-      <template x-if="items.length === 0 && selected.length > 0">
+      <template x-if="tab === 'feed' && items.length === 0 && selected.length > 0">
         <p class="empty">
           <span x-text="selected.length === 1 ? 'No articles match this filter.' : `No articles match all ${selected.length} filters.`"></span>
           <button type="button" class="btn btn-quiet" @click="clearCategories()">Clear filters</button>
         </p>
       </template>
 
-      <ul class="feed" x-show="items.length > 0">
-        <template x-for="item in items" :key="item.article_id">
+      <template x-if="tab === 'saved' && savedItems.length === 0 && selected.length === 0">
+        <p class="empty">Nothing saved yet. Star an article in the Feed to keep it here.</p>
+      </template>
+
+      <template x-if="tab === 'saved' && savedItems.length === 0 && selected.length > 0">
+        <p class="empty">
+          <span>No saved articles match this filter.</span>
+          <button type="button" class="btn btn-quiet" @click="clearCategories()">Clear filters</button>
+        </p>
+      </template>
+
+      <ul class="feed" x-show="visibleItems.length > 0">
+        <template x-for="item in visibleItems" :key="item.article_id">
           <li class="feed-item" :class="{ open: expanded === item.article_id }">
+            <!-- The star is a sibling of the header button, not a child:
+                 a button inside a button is invalid and browsers unnest it. -->
+            <div class="feed-row">
             <button class="feed-head" @click="toggle(item)"
                     :aria-expanded="expanded === item.article_id">
               <span class="feed-score" x-show="item.score !== null"
@@ -136,6 +169,14 @@
                 </span>
               </span>
             </button>
+            <button type="button" class="star" :class="{ on: item.saved }"
+                    :aria-pressed="item.saved"
+                    :aria-label="item.saved ? 'Remove from saved' : 'Save for later'"
+                    :title="item.saved ? 'Remove from saved' : 'Save for later'"
+                    @click.stop="toggleSaved(item)">
+              <svg class="icon" aria-hidden="true"><use href="#icon-star"/></svg>
+            </button>
+            </div>
 
             <div class="feed-body" x-show="expanded === item.article_id" x-collapse>
               <ul class="bullets">
