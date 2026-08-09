@@ -73,6 +73,49 @@ already rules out duplicate rows.
 """
 
 
+_FEED_ROW_SELECT = """
+    SELECT a.id            AS article_id,
+           a.canonical_url AS url,
+           a.published_at  AS published_at,
+           a.saved_at IS NOT NULL AS saved,
+           s.headline      AS headline,
+           s.bullets_json  AS bullets_json,
+           src.id          AS source_id,
+           src.name        AS source_name,
+           src.type        AS source_type,
+           (SELECT value FROM ratings r
+             WHERE r.article_id = a.id
+             ORDER BY r.created_at DESC, r.id DESC LIMIT 1) AS rating,
+           (SELECT score FROM scores sc
+             WHERE sc.article_id = a.id
+             ORDER BY sc.created_at DESC, sc.id DESC LIMIT 1) AS score
+      FROM articles a
+      JOIN summaries s ON s.article_id = a.id
+      JOIN sources  src ON src.id = a.source_id
+     WHERE a.summarized_at IS NOT NULL
+       AND a.unusable_at IS NULL
+"""
+"""The card row, shared by ``feed_items`` and ``ranked_items``.
+
+Shared because the API assembles ONE ``FeedItem`` DTO from the rows of both. It
+was duplicated verbatim in the two queries, which is equal until the day someone
+adds a field to one of them — and a field present in the feed but missing from
+the ranked view is precisely the shape of the bug that shipped once already,
+when the WebSocket payload omitted ``categories``. Here drift is impossible
+rather than merely absent.
+
+Both trailing conditions are deliberate. ``summarized_at IS NOT NULL`` is what
+makes a card a card. ``unusable_at IS NULL`` is redundant behind it — an
+unusable article is never summarized — and is kept so the invariant is local to
+the read site rather than inferred from another column.
+
+The tie-break on ``id`` is load-bearing: ``scores`` and ``ratings`` are both
+append-only, and on a colliding ``created_at`` SQLite resolves by rowid
+*ascending*, so the OLDER row would win and a re-score would be silently
+discarded.
+"""
+
+
 def _score_group(rows: list[dict]) -> dict:
     """Count and score range for one gated group, used by ``ranked_items``.
 
@@ -716,38 +759,7 @@ class StateStore:
 
         cur = await self.db.execute(
             f"""
-            SELECT a.id            AS article_id,
-                   a.canonical_url AS url,
-                   a.published_at  AS published_at,
-                   a.saved_at IS NOT NULL AS saved,
-                   s.headline      AS headline,
-                   s.bullets_json  AS bullets_json,
-                   src.id          AS source_id,
-                   src.name        AS source_name,
-                   src.type        AS source_type,
-                   (SELECT value FROM ratings r
-                     WHERE r.article_id = a.id
-                     ORDER BY r.created_at DESC, r.id DESC LIMIT 1) AS rating,
-                   (SELECT score FROM scores sc
-                     WHERE sc.article_id = a.id
-                     -- Tie-break on id, not just timestamp. Both tables are
-                     -- append-only, so "latest" on a colliding created_at
-                     -- otherwise resolves by rowid *ascending* and the OLDER
-                     -- row wins — a re-score or re-rating silently discarded,
-                     -- which is the hardest kind of failure to notice. A batch
-                     -- re-score stamping one `now` across the run is exactly
-                     -- how that collision happens.
-                     ORDER BY sc.created_at DESC, sc.id DESC LIMIT 1) AS score
-              FROM articles a
-              JOIN summaries s ON s.article_id = a.id
-              JOIN sources  src ON src.id = a.source_id
-             WHERE a.summarized_at IS NOT NULL
-               -- Redundant today: an unusable article is never summarized, so
-               -- the line above already excludes it. Kept so the invariant is
-               -- local to the read site rather than inferred from another
-               -- column. Do not treat this and the one in articles_pending as
-               -- the same kind of check — that one is load-bearing.
-               AND a.unusable_at IS NULL
+            {_FEED_ROW_SELECT}
              {category_clause}
              {saved_clause}
              ORDER BY {order_by}
@@ -845,33 +857,13 @@ class StateStore:
 
         cur = await self.db.execute(
             f"""
-            SELECT a.id            AS article_id,
-                   a.canonical_url AS url,
-                   a.published_at  AS published_at,
-                   a.saved_at IS NOT NULL AS saved,
-                   s.headline      AS headline,
-                   s.bullets_json  AS bullets_json,
-                   src.id          AS source_id,
-                   src.name        AS source_name,
-                   src.type        AS source_type,
-                   (SELECT value FROM ratings r
-                     WHERE r.article_id = a.id
-                     ORDER BY r.created_at DESC, r.id DESC LIMIT 1) AS rating,
-                   (SELECT score FROM scores sc
-                     WHERE sc.article_id = a.id
-                     -- Same tie-break as feed_items, for the same reason: on a
-                     -- colliding created_at, timestamp order alone lets the
-                     -- OLDER row win.
-                     ORDER BY sc.created_at DESC, sc.id DESC LIMIT 1) AS score
-              FROM articles a
-              JOIN summaries s ON s.article_id = a.id
-              JOIN sources  src ON src.id = a.source_id
-             WHERE a.summarized_at IS NOT NULL
-               AND a.unusable_at IS NULL
+            {_FEED_ROW_SELECT}
              {category_clause}
-             -- NULLs last explicitly. SQLite happens to sort them last under
-             -- DESC, but the whole point of this method is that unscored
-             -- articles never ride along on an implicit NULL ordering.
+             -- Belt-and-braces, not the guarantee. Unscored rows are removed
+             -- in Python below; that filter is what keeps them out of every
+             -- ranking decision. This key only stops them riding along on an
+             -- implicit NULL ordering should a SQL LIMIT ever be added, and
+             -- costs nothing since every surviving row evaluates it to 0.
              ORDER BY score IS NULL,
                       score DESC,
                       COALESCE(a.published_at, a.fetched_at) DESC
