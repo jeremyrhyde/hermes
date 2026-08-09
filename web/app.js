@@ -33,6 +33,13 @@ function app() {
     // The server's rejection of a knob write, verbatim. Empty when the knobs
     // are in a state the server accepted.
     knobError: '',
+    // What each slider reads *while being dragged*. A range input fires `input`
+    // continuously, so writing through on every pixel would mean a PUT and a
+    // refetch per pixel; the write waits for `change` (release) instead. This
+    // holds the in-between value so the number beside the label still moves
+    // with your thumb. Re-synced from the server on every load, so a rejected
+    // or superseded drag cannot leave it lying.
+    knobDraft: { score_cutoff: 0, max_displayed: 50 },
     // Preference key -> the field /ranked/ reports it under. The cutoff has two
     // spellings across the two endpoints — `score_cutoff` is a preferences key
     // among others, `cutoff` is unambiguous inside a ranking — and this is the
@@ -161,6 +168,15 @@ function app() {
           below_cutoff: this._group(ranked.below_cutoff),
           unscored: this._group(ranked.unscored),
         };
+        // Re-anchor the slider labels to what the server actually applied.
+        // Without this a rejected or superseded drag leaves the number showing
+        // where the thumb was let go rather than where the gate ended up — and
+        // the slider itself would snap back via :value while its own label
+        // disagreed, which is worse than either being wrong alone.
+        this.knobDraft = {
+          score_cutoff: this.gating.cutoff,
+          max_displayed: this.gating.max_displayed,
+        };
       }
 
       if (categories.status === 'fulfilled') {
@@ -182,6 +198,16 @@ function app() {
      * so there is exactly one copy of the card markup. */
     get visibleItems() {
       return this.tab === 'saved' ? this.savedItems : this.items;
+    },
+
+    /* Whether the current tab shows a list of articles.
+     *
+     * Named rather than spelled out as `tab !== 'sources' && tab !== 'settings'`
+     * in three templates, because every tab added since has had to remember to
+     * exclude itself from all three — and the one that forgot would render an
+     * empty article panel under its own content with no obvious cause. */
+    get isListTab() {
+      return this.tab === 'feed' || this.tab === 'saved';
     },
 
     /* The withheld groups as rendered rows, empty ones omitted.
@@ -280,7 +306,11 @@ function app() {
      * refetches nothing. */
     switchTab(name) {
       if (this.tab === name) return;
-      if (name === 'sources') {  // parameterizes nothing, so nothing to fetch
+      // Neither tab parameterizes a list, so neither fetches one. That also
+      // keeps them out of the x-show flap entirely: with no await between the
+      // flip and the paint, nothing can evaluate false and then true inside one
+      // frame, which is the shape that leaves an element hidden forever.
+      if (name === 'sources' || name === 'settings') {
         this.tab = name;
         return;
       }

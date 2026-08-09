@@ -66,6 +66,9 @@
     <button role="tab" :aria-selected="tab === 'sources'"
             :class="{ active: tab === 'sources' }"
             @click="switchTab('sources')">Sources</button>
+    <button role="tab" :aria-selected="tab === 'settings'"
+            :class="{ active: tab === 'settings' }"
+            @click="switchTab('settings')">Settings</button>
   </nav>
 
   <!-- ------------------------------------------------------------------ -->
@@ -80,7 +83,7 @@
   <!-- than empty.                                                         -->
   <!-- ------------------------------------------------------------------ -->
   <div class="filter-bar"
-       x-show="tab !== 'sources' && categoryFilters.length > 0
+       x-show="isListTab && categoryFilters.length > 0
                && (tab !== 'saved' || hasAnySaved)">
     <div class="filter-row">
       <div class="filter-scroll" role="group" aria-label="Filter by category">
@@ -123,42 +126,21 @@
          system without a build step, so a second copy of the card markup
          would be the copy that stops getting updated. `visibleItems` picks
          the list; nothing below it knows which tab it is rendering. -->
-    <section x-show="tab !== 'sources'" role="tabpanel" class="panel">
-      <!-- The Feed's header is the gate's control panel: both knobs and how
-           much of the population survived them. Saved has no gate, so it keeps
-           the plain count. Two x-shows rather than one x-if each, because the
-           number inputs must survive a tab switch with their focus intact. -->
+    <section x-show="isListTab" role="tabpanel" class="panel">
+      <!-- Read-only now that the knobs live in Settings: it states the gate in
+           effect and how much of the population survived it, which is what you
+           check at a glance. Editing it is a deliberate trip to another tab —
+           the cutoff decides what you are allowed to see, so nudging it should
+           not be one mis-tap away from the article you were reading. -->
       <div class="section-head">
         <h2 class="section-title">
           <span x-show="tab === 'saved'"
                 x-text="`${savedItems.length} saved article${savedItems.length === 1 ? '' : 's'}`"></span>
-          <span class="knobs" x-show="tab === 'feed'">
-            <!-- :value, not x-model: a rejected write leaves the bound state
-                 untouched, so setKnob puts the box back by hand.
-                 aria-label overrides the wrapping <label>, so each one starts
-                 with that label's visible word — a voice-control user saying
-                 "cutoff" must still hit the box. -->
-            <label class="knob">cutoff
-              <input type="number" class="knob-input" min="0" max="100" step="1"
-                     aria-label="cutoff — lowest score shown"
-                     :value="gating.cutoff"
-                     @change="setKnob('score_cutoff', $event.target)">
-            </label>
-            <span class="knob-sep" aria-hidden="true">·</span>
-            <label class="knob">showing
-              <input type="number" class="knob-input" min="1" max="200" step="1"
-                     aria-label="showing — most articles displayed"
-                     :value="gating.max_displayed"
-                     @change="setKnob('max_displayed', $event.target)">
-            </label>
-            <span class="knob-sep" aria-hidden="true">·</span>
-            <span x-text="`${items.length} of ${gating.total} article${gating.total === 1 ? '' : 's'}`"></span>
-          </span>
+          <span x-show="tab === 'feed'"
+                x-text="`cutoff ${gating.cutoff} · showing ${gating.max_displayed} · ${items.length} of ${gating.total} article${gating.total === 1 ? '' : 's'}`"></span>
         </h2>
         <button class="btn btn-quiet" @click="refreshAll()">Refresh</button>
       </div>
-
-      <p class="hint knob-error" role="status" x-show="knobError" x-text="knobError"></p>
 
       <!-- Two distinct empty states per tab. "Nothing yet" is about an empty
            database; a filtered miss means the user has articles, just none
@@ -289,6 +271,53 @@
           </li>
         </template>
       </ul>
+    </section>
+
+    <!-- ---------------------------------------------------------------- -->
+    <!-- Settings — the gate's two knobs                                  -->
+    <!-- ---------------------------------------------------------------- -->
+    <section x-show="tab === 'settings'" role="tabpanel" class="panel">
+      <h2 class="section-title">Settings</h2>
+
+      <!-- Sliders commit on release (@change), not on every pixel of travel
+           (@input). A range input fires input continuously while dragging, so
+           binding the write there would issue a PUT per pixel and a refetch
+           per PUT. The number beside the label tracks the drag live off local
+           state, so it still feels immediate. -->
+      <div class="setting">
+        <label class="setting-label" for="knob-cutoff">
+          Score cutoff
+          <output class="setting-value" for="knob-cutoff" x-text="knobDraft.score_cutoff"></output>
+        </label>
+        <input type="range" class="setting-range" id="knob-cutoff"
+               min="0" max="100" step="1"
+               :value="gating.cutoff"
+               @input="knobDraft.score_cutoff = Number($event.target.value)"
+               @change="setKnob('score_cutoff', $event.target)">
+        <p class="setting-help">
+          Articles scoring below this are withheld from the feed and collapsed
+          into a count. <strong>0</strong> shows everything, which is where to
+          leave it until the scores look right.
+        </p>
+      </div>
+
+      <div class="setting">
+        <label class="setting-label" for="knob-max">
+          Most articles shown
+          <output class="setting-value" for="knob-max" x-text="knobDraft.max_displayed"></output>
+        </label>
+        <input type="range" class="setting-range" id="knob-max"
+               min="1" max="200" step="1"
+               :value="gating.max_displayed"
+               @input="knobDraft.max_displayed = Number($event.target.value)"
+               @change="setKnob('max_displayed', $event.target)">
+        <p class="setting-help">
+          A hard cap on the list, whatever the cutoff allows. Anything past it
+          is counted as overflow rather than dropped.
+        </p>
+      </div>
+
+      <p class="hint knob-error" role="status" x-show="knobError" x-text="knobError"></p>
     </section>
   </main>
 
