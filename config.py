@@ -44,6 +44,10 @@ class Settings(BaseSettings):
         SUMMARY_MAX_INPUT_CHARS: Articles longer than this are truncated
             before the API call, bounding cost on outlier posts (~60k chars
             ≈ 15k tokens). Default ``60_000``.
+        SCORE_MODEL: Model used for scoring. A larger model than
+            ``SUMMARY_MODEL`` on purpose: scoring is a judgment call against a
+            rubric, not the grounded extraction that R7 found small models
+            handle well. Default ``"claude-sonnet-5"``.
         POLL_TICK_SECONDS: How often the poller loop wakes. Default ``60.0``.
         POLL_MIN_SECONDS: Lower clamp on each source's adaptive poll
             interval. Default ``900`` (15 min).
@@ -73,6 +77,7 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     SUMMARY_MODEL: str = "claude-haiku-4-5"
     SUMMARY_MAX_INPUT_CHARS: int = 60_000
+    SCORE_MODEL: str = "claude-sonnet-5"
 
     POLL_TICK_SECONDS: float = Field(default=60.0, gt=0)
     POLL_MIN_SECONDS: int = Field(default=900, gt=0)
