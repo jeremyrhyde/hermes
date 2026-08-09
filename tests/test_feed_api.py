@@ -286,3 +286,77 @@ def test_unknown_scope_returns_400(client: TestClient) -> None:
     res = client.get("/categories/?scope=nonsense")
     assert res.status_code == 400
     assert "nonsense" in res.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Feedback capture — 2026-08-09-phase2-spec.md section 7
+# ---------------------------------------------------------------------------
+
+
+def test_rating_an_article_is_reported_in_the_feed(client: TestClient) -> None:
+    assert client.put("/articles/1/rating", json={"value": 1}).status_code == 204
+
+    by_id = {i["article_id"]: i["rating"] for i in client.get("/feed/").json()}
+    assert by_id[1] == 1
+    assert by_id[2] is None
+
+
+def test_rating_can_be_changed(client: TestClient) -> None:
+    client.put("/articles/1/rating", json={"value": 1})
+    client.put("/articles/1/rating", json={"value": -1})
+
+    by_id = {i["article_id"]: i["rating"] for i in client.get("/feed/").json()}
+    assert by_id[1] == -1, "latest wins"
+
+
+def test_rating_can_be_cleared(client: TestClient) -> None:
+    client.put("/articles/1/rating", json={"value": 1})
+    assert client.delete("/articles/1/rating").status_code == 204
+
+    by_id = {i["article_id"]: i["rating"] for i in client.get("/feed/").json()}
+    assert by_id[1] is None
+
+
+def test_clearing_an_unrated_article_succeeds(client: TestClient) -> None:
+    """404 is about the article, not the rating."""
+    assert client.delete("/articles/1/rating").status_code == 204
+
+
+def test_rating_rejects_a_neutral_value(client: TestClient) -> None:
+    res = client.put("/articles/1/rating", json={"value": 0})
+    assert res.status_code == 400
+    assert "0" in res.json()["detail"]
+
+
+def test_rating_an_unknown_article_returns_404(client: TestClient) -> None:
+    res = client.put("/articles/9999/rating", json={"value": 1})
+    assert res.status_code == 404
+    assert "9999" in res.json()["detail"]
+
+
+def test_clearing_an_unknown_article_returns_404(client: TestClient) -> None:
+    assert client.delete("/articles/9999/rating").status_code == 404
+
+
+@pytest.mark.parametrize("kind", ["expand", "click_through"])
+def test_interactions_are_recorded(client: TestClient, kind: str) -> None:
+    res = client.post("/articles/1/interactions", json={"kind": kind})
+    assert res.status_code == 204
+
+
+def test_interaction_rejects_an_unknown_kind(client: TestClient) -> None:
+    """Validated in the API, not left to the CHECK constraint to raise a 500."""
+    res = client.post("/articles/1/interactions", json={"kind": "nonsense"})
+    assert res.status_code == 400
+    assert "nonsense" in res.json()["detail"]
+
+
+def test_interaction_for_an_unknown_article_returns_404(client: TestClient) -> None:
+    res = client.post("/articles/9999/interactions", json={"kind": "expand"})
+    assert res.status_code == 404
+
+
+def test_sources_report_unusable_count(client: TestClient, seeded: StateStore) -> None:
+    """Zero must be present, never absent — an absent key renders undefined."""
+    rows = client.get("/sources/").json()
+    assert rows[0]["unusable_count"] == 0

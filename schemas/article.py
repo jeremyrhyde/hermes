@@ -105,6 +105,28 @@ class DiscoverResult(BaseModel):
     ttl_seconds: int | None = None
 
 
+class RatingIn(BaseModel):
+    """Request body for ``PUT /articles/{id}/rating``.
+
+    ``value`` is a plain int rather than ``Literal[-1, 1]`` on purpose: the
+    literal would make FastAPI answer an out-of-range value with a 422 shaped
+    like a validation dump, and the spec pins a 400 naming the valid values —
+    consistent with how unknown categories and scopes are rejected.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    value: int
+
+
+class InteractionIn(BaseModel):
+    """Request body for ``POST /articles/{id}/interactions``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: str
+
+
 class FeedItem(BaseModel):
     """What the UI list renders. Assembled by the API, never a serialized row."""
 

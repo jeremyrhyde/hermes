@@ -46,7 +46,7 @@ from fastapi import (
 from fastapi.staticfiles import StaticFiles
 
 from core.state import parse_iso
-from schemas.article import FeedItem
+from schemas.article import FeedItem, InteractionIn, RatingIn
 from schemas.source import SourceConfig, SourceRef
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -321,6 +321,70 @@ def _build_categories_router() -> APIRouter:
     return router
 
 
+_INTERACTION_KINDS = ("expand", "click_through")
+"""Mirrors the CHECK constraint on ``interactions.kind``.
+
+Validated here so an unknown kind is a 400 naming the valid ones, rather than a
+constraint violation surfacing as a 500.
+"""
+
+
+def _build_articles_router() -> APIRouter:
+    router = APIRouter(prefix="/articles", tags=["feedback"])
+
+    @router.put("/{article_id}/rating", status_code=status.HTTP_204_NO_CONTENT)
+    async def rate(article_id: int, body: RatingIn, request: Request) -> None:
+        """Rate an article ±1.
+
+        ``PUT`` because the client states a desired end state — "my rating is
+        +1" — which is idempotent from the user's side even though the
+        append-only log grows underneath.
+        """
+
+        if body.value not in (-1, 1):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"invalid rating {body.value}; valid values: -1, 1",
+            )
+        if not await _store(request).rate_article(
+            article_id, body.value, datetime.now(timezone.utc)
+        ):
+            raise _unknown_article(article_id)
+
+    @router.delete("/{article_id}/rating", status_code=status.HTTP_204_NO_CONTENT)
+    async def unrate(article_id: int, request: Request) -> None:
+        """Clear an article's rating.
+
+        ``CHECK (value IN (-1, 1))`` makes neutral unrepresentable, so undoing a
+        misclick means deleting. Without this a misclick would be permanent, and
+        a permanent misclick is exactly the bad signal that teaches the taste
+        profile the wrong thing. Clearing an unrated article is a 204 no-op;
+        only an unknown article is a 404.
+        """
+
+        if not await _store(request).clear_rating(article_id):
+            raise _unknown_article(article_id)
+
+    @router.post("/{article_id}/interactions", status_code=status.HTTP_204_NO_CONTENT)
+    async def interact(
+        article_id: int, body: InteractionIn, request: Request
+    ) -> None:
+        """Log an interaction. Never deduplicated — repetition is signal."""
+
+        if body.kind not in _INTERACTION_KINDS:
+            valid = ", ".join(_INTERACTION_KINDS)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"unknown interaction kind {body.kind!r}; valid kinds: {valid}",
+            )
+        if not await _store(request).record_interaction(
+            article_id, body.kind, datetime.now(timezone.utc)
+        ):
+            raise _unknown_article(article_id)
+
+    return router
+
+
 def _build_sources_router() -> APIRouter:
     router = APIRouter(prefix="/sources", tags=["sources"])
 
@@ -328,9 +392,16 @@ def _build_sources_router() -> APIRouter:
     async def list_sources(request: Request) -> list[dict[str, Any]]:
         """Source health. Disabled sources stay visible so they cannot rot."""
 
-        rows = await _store(request).all_source_rows()
+        store = _store(request)
+        rows = await store.all_source_rows()
+        # unusable_counts() cannot emit a row for a source with none, so the
+        # zero is filled here. It must be present rather than absent: a missing
+        # key renders as `undefined` in the template, which is exactly how the
+        # WebSocket payload broke once by omitting `categories`.
+        unusable = await store.unusable_counts()
         return [
             {
+                "unusable_count": unusable.get(row["id"], 0),
                 "id": row["id"],
                 "name": row["name"],
                 "type": row["type"],
@@ -458,6 +529,7 @@ def create_app(
 
     app.include_router(_build_feed_router())
     app.include_router(_build_saved_router())
+    app.include_router(_build_articles_router())
     app.include_router(_build_categories_router())
     app.include_router(_build_sources_router())
     app.include_router(_build_ws_router())

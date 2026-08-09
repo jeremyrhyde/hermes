@@ -16,7 +16,7 @@ async def test_apply_migrations_creates_schema(tmp_path) -> None:
     async with aiosqlite.connect(tmp_path / "t.db") as db:
         version = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert version == 3
+        assert version == 4
         names = await _table_names(db)
         assert {
             "sources", "articles", "summaries", "scores",
@@ -30,7 +30,7 @@ async def test_apply_migrations_is_idempotent(tmp_path) -> None:
         first = await apply_migrations(db, MIGRATIONS_DIR)
         second = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert first == second == 3
+        assert first == second == 4
 
 
 async def test_metadata_columns_exist_from_migration_001(tmp_path) -> None:
@@ -139,7 +139,7 @@ async def test_migration_002_creates_article_categories(tmp_path) -> None:
     async with aiosqlite.connect(tmp_path / "t.db") as db:
         version = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert version == 3
+        assert version == 4
         cur = await db.execute("PRAGMA table_info(article_categories)")
         cols = {row[1] for row in await cur.fetchall()}
         assert {"article_id", "category"} <= cols
@@ -176,7 +176,7 @@ async def test_migration_003_adds_saved_at(tmp_path) -> None:
     async with aiosqlite.connect(tmp_path / "t.db") as db:
         version = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert version == 3
+        assert version == 4
         cur = await db.execute("PRAGMA table_info(articles)")
         cols = {row[1] for row in await cur.fetchall()}
         assert "saved_at" in cols
@@ -188,11 +188,11 @@ async def test_migration_003_is_not_rerun_on_restart(tmp_path) -> None:
     than merely correct."""
     db_path = tmp_path / "t.db"
     async with aiosqlite.connect(db_path) as db:
-        assert await apply_migrations(db, MIGRATIONS_DIR) == 3
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 4
 
     async with aiosqlite.connect(db_path) as db:
         # Raises OperationalError: duplicate column name if the filter regresses.
-        assert await apply_migrations(db, MIGRATIONS_DIR) == 3
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 4
 
 
 async def test_saved_at_defaults_to_null(tmp_path) -> None:
@@ -228,3 +228,53 @@ async def test_saved_index_is_partial(tmp_path) -> None:
 
     assert row is not None, "idx_articles_saved is missing from articles"
     assert row[0] == 1, "idx_articles_saved must be a partial index"
+
+
+async def test_migration_004_adds_unusable_columns(tmp_path) -> None:
+    async with aiosqlite.connect(tmp_path / "t.db") as db:
+        version = await apply_migrations(db, MIGRATIONS_DIR)
+
+        assert version == 4
+        cur = await db.execute("PRAGMA table_info(articles)")
+        cols = {row[1] for row in await cur.fetchall()}
+        assert {"unusable_at", "unusable_reason"} <= cols
+
+
+async def test_migration_004_is_not_rerun_on_restart(tmp_path) -> None:
+    """Another ADD COLUMN, so the version filter stays load-bearing."""
+    db_path = tmp_path / "t.db"
+    async with aiosqlite.connect(db_path) as db:
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 4
+
+    async with aiosqlite.connect(db_path) as db:
+        # Raises OperationalError: duplicate column name if the filter regresses.
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 4
+
+
+async def test_unusable_defaults_to_null(tmp_path) -> None:
+    """Articles that predate the gate are not retroactively unusable."""
+    async with aiosqlite.connect(tmp_path / "t.db") as db:
+        await apply_migrations(db, MIGRATIONS_DIR)
+        await db.execute(
+            "INSERT INTO sources (id, type, name, feed_url) "
+            "VALUES ('s', 'substack', 'S', 'https://x/feed')"
+        )
+        await db.execute(
+            "INSERT INTO articles (id, source_id, guid, canonical_url, title, fetched_at)"
+            " VALUES (1, 's', 'g', 'https://x/1', 'T', '2026-08-09T00:00:00+00:00')"
+        )
+        cur = await db.execute(
+            "SELECT unusable_at, unusable_reason FROM articles WHERE id = 1"
+        )
+        assert await cur.fetchone() == (None, None)
+
+
+async def test_migration_004_index_is_partial(tmp_path) -> None:
+    """A full index over every article would be wasted — unusable rows are rare."""
+    async with aiosqlite.connect(tmp_path / "t.db") as db:
+        await apply_migrations(db, MIGRATIONS_DIR)
+        cur = await db.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'idx_articles_unusable'"
+        )
+        sql = (await cur.fetchone())[0]
+        assert "WHERE unusable_at IS NOT NULL" in sql

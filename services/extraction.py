@@ -21,7 +21,37 @@ import trafilatura
 logger = logging.getLogger(__name__)
 
 #: Below this, feed-provided content is treated as truncated and we refetch.
+#: Below it *again* after the refetch, the article is unusable and is never
+#: summarized. Sits between the observed email-teaser cluster (81-102 words)
+#: and the shortest real article in the corpus (362) — one corpus, not a
+#: validated threshold.
 MIN_USABLE_WORDS = 120
+
+#: Substrings that identify a subscriber wall. This list can only ever *label*
+#: an article that word count has already rejected — it never rejects one on
+#: its own. That constraint is what keeps it from drifting into a content
+#: filter, which is deliberately not part of this system: taste belongs to the
+#: scorer, not to a hardcoded string list.
+PAYWALL_MARKERS = (
+    "this post is for paid subscribers",
+    "this post is for paying subscribers",
+    "subscribe to continue reading",
+    "this post is for subscribers",
+)
+
+
+def unusable_reason(result: "ExtractionResult") -> str:
+    """Label an extraction already rejected on word count.
+
+    ``paywalled`` and ``thin after refetch (N words)`` read differently on the
+    health panel, and the difference is what tells you whether to change a
+    source or fix a bug.
+    """
+
+    text = result.text.strip().lower()
+    if any(marker in text for marker in PAYWALL_MARKERS):
+        return "paywalled"
+    return f"thin after refetch ({result.word_count} words)"
 
 
 @dataclass(frozen=True)

@@ -27,6 +27,14 @@
     <symbol id="icon-star" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M11.5 3.3a.6.6 0 0 1 1 0l2.4 5a.6.6 0 0 0 .5.3l5.4.8c.5.1.7.7.3 1l-3.9 3.8a.6.6 0 0 0-.2.6l1 5.4c.1.5-.5.9-.9.6l-4.8-2.5a.6.6 0 0 0-.6 0l-4.8 2.5c-.4.3-1-.1-.9-.6l1-5.4a.6.6 0 0 0-.2-.6l-4-3.8c-.3-.3-.1-.9.4-1l5.4-.8a.6.6 0 0 0 .5-.3Z"/>
     </symbol>
+    <symbol id="icon-thumb-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M7 10v11H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z"/>
+      <path d="M7 10l4.5-7a2 2 0 0 1 3.4 2l-1.2 5h5.1a2 2 0 0 1 2 2.5l-1.8 7A2 2 0 0 1 17 21H7"/>
+    </symbol>
+    <symbol id="icon-thumb-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M17 14V3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1z"/>
+      <path d="M17 14l-4.5 7a2 2 0 0 1-3.4-2l1.2-5H5.2a2 2 0 0 1-2-2.5l1.8-7A2 2 0 0 1 7 3h10"/>
+    </symbol>
   </svg>
 
   <!-- ------------------------------------------------------------------ -->
@@ -184,8 +192,27 @@
                   <li x-text="b"></li>
                 </template>
               </ul>
-              <a class="btn" :href="item.url" target="_blank" rel="noopener"
-                 @click="recordClick(item)">Read the full article</a>
+              <!-- Rating lives here, not in the header: you rate after
+                   reading, and the header already carries the star. Three tap
+                   targets in one 44px row invites misclicks on a phone. -->
+              <div class="feed-actions">
+                <a class="btn" :href="item.url" target="_blank" rel="noopener"
+                   @click="recordClick(item)">Read the full article</a>
+                <div class="rating" role="group" aria-label="Rate this article">
+                  <button type="button" class="rate" :class="{ on: item.rating === 1 }"
+                          :aria-pressed="item.rating === 1"
+                          aria-label="Rate up"
+                          @click="rate(item, 1)">
+                    <svg class="icon" aria-hidden="true"><use href="#icon-thumb-up"/></svg>
+                  </button>
+                  <button type="button" class="rate" :class="{ on: item.rating === -1 }"
+                          :aria-pressed="item.rating === -1"
+                          aria-label="Rate down"
+                          @click="rate(item, -1)">
+                    <svg class="icon" aria-hidden="true"><use href="#icon-thumb-down"/></svg>
+                  </button>
+                </div>
+              </div>
             </div>
           </li>
         </template>
@@ -205,6 +232,10 @@
                   x-text="s.disabled ? 'disabled' : (s.enabled ? 'active' : 'paused')"></span>
             <span class="source-errors" x-show="s.error_count > 0"
                   x-text="`${s.error_count} error(s)`"></span>
+            <!-- The only visibility into skipped posts: nothing else records
+                 that an article was found unreadable. -->
+            <span class="source-errors" x-show="s.unusable_count > 0"
+                  x-text="`${s.unusable_count} unreadable`"></span>
           </li>
         </template>
       </ul>

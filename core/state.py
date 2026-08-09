@@ -362,7 +362,16 @@ class StateStore:
         # internal dict; source_id is user-controlled (it comes from
         # sources.yaml) and is therefore always a bound parameter.
         column = {"extract": "extracted_at", "summarize": "summarized_at"}[stage]
-        precondition = "" if stage == "extract" else "AND extracted_at IS NOT NULL"
+        # The unusable exclusion is load-bearing here and nowhere else. This
+        # query selects for `summarized_at IS NULL`, which is precisely the
+        # state an unusable article is permanently in, so without it every one
+        # of them is returned as pending on every poll of its source, forever.
+        # The same condition on feed_items and category_counts is defensive —
+        # there, `summarized_at IS NOT NULL` already excludes them.
+        precondition = (
+            "" if stage == "extract"
+            else "AND extracted_at IS NOT NULL AND unusable_at IS NULL"
+        )
         source_clause = "AND source_id = ?" if source_id is not None else ""
         params: tuple[object, ...] = (
             (source_id, limit) if source_id is not None else (limit,)
@@ -415,6 +424,111 @@ class StateStore:
             "UPDATE articles SET saved_at = NULL WHERE id = ? RETURNING id",
             (article_id,),
         )
+
+    # ------------------------------------------------------------------
+    # Unusable extractions
+    # ------------------------------------------------------------------
+    async def mark_unusable(
+        self, article_id: int, reason: str, at: datetime
+    ) -> None:
+        """Record that *article_id* has no usable text, terminally.
+
+        A stored verdict, not a computed one: lowering ``MIN_USABLE_WORDS``
+        later changes nothing on its own, because every exclusion keys off this
+        column rather than the threshold. The row and its text are retained so a
+        future re-evaluation would need no refetch, but nothing clears this
+        automatically.
+        """
+
+        await self.db.execute(
+            "UPDATE articles SET unusable_at = ?, unusable_reason = ? WHERE id = ?",
+            (iso(at), reason, article_id),
+        )
+        await self.db.commit()
+
+    async def unusable_counts(self) -> dict[str, int]:
+        """Map source id to its unusable article count, non-zero entries only.
+
+        A GROUP BY cannot produce a row for a source with none, so callers that
+        need a zero must supply it themselves.
+        """
+
+        cur = await self.db.execute(
+            """
+            SELECT source_id, COUNT(*) AS n FROM articles
+             WHERE unusable_at IS NOT NULL
+             GROUP BY source_id
+            """
+        )
+        return {row["source_id"]: row["n"] for row in await cur.fetchall()}
+
+    # ------------------------------------------------------------------
+    # Feedback
+    # ------------------------------------------------------------------
+    async def rate_article(
+        self, article_id: int, value: int, at: datetime
+    ) -> bool:
+        """Append a ±1 rating. Returns whether the article exists.
+
+        Append-only with latest-wins, which ``feed_items`` already resolves via
+        ``ORDER BY created_at DESC LIMIT 1``. Appending rather than upserting
+        keeps the history of how an opinion changed — which the profile
+        distillation may want — and avoids an upsert race between two rapid
+        clicks.
+
+        Existence is checked first because an INSERT into ``ratings`` would
+        otherwise fail on the foreign key, and a constraint error is a worse way
+        to learn about an unknown id than a boolean.
+        """
+
+        if not await self._article_exists(article_id):
+            return False
+        await self.db.execute(
+            "INSERT INTO ratings (article_id, value, created_at) VALUES (?, ?, ?)",
+            (article_id, value, iso(at)),
+        )
+        await self.db.commit()
+        return True
+
+    async def clear_rating(self, article_id: int) -> bool:
+        """Remove every rating for *article_id*. Returns whether it exists.
+
+        ``CHECK (value IN (-1, 1))`` makes a neutral rating unrepresentable, so
+        undoing one means deleting rather than writing a zero. Clearing an
+        unrated article is a successful no-op — the boolean is existence, as it
+        is for :meth:`unsave_article`.
+        """
+
+        if not await self._article_exists(article_id):
+            return False
+        await self.db.execute(
+            "DELETE FROM ratings WHERE article_id = ?", (article_id,)
+        )
+        await self.db.commit()
+        return True
+
+    async def record_interaction(
+        self, article_id: int, kind: str, at: datetime
+    ) -> bool:
+        """Append an interaction event. Returns whether the article exists.
+
+        Never deduplicated: expanding the same article three times is signal.
+        """
+
+        if not await self._article_exists(article_id):
+            return False
+        await self.db.execute(
+            "INSERT INTO interactions (article_id, kind, created_at) VALUES (?, ?, ?)",
+            (article_id, kind, iso(at)),
+        )
+        await self.db.commit()
+        return True
+
+    async def _article_exists(self, article_id: int) -> bool:
+        cur = await self.db.execute(
+            "SELECT 1 FROM articles WHERE id = ?", (article_id,)
+        )
+        return await cur.fetchone() is not None
 
     async def _update_exists(self, sql: str, params: tuple[object, ...]) -> bool:
         """Run an ``UPDATE ... RETURNING`` and report whether it matched a row."""
@@ -493,6 +607,12 @@ class StateStore:
               JOIN summaries s ON s.article_id = a.id
               JOIN sources  src ON src.id = a.source_id
              WHERE a.summarized_at IS NOT NULL
+               -- Redundant today: an unusable article is never summarized, so
+               -- the line above already excludes it. Kept so the invariant is
+               -- local to the read site rather than inferred from another
+               -- column. Do not treat this and the one in articles_pending as
+               -- the same kind of check — that one is load-bearing.
+               AND a.unusable_at IS NULL
              {category_clause}
              {saved_clause}
              ORDER BY {order_by}
@@ -580,6 +700,7 @@ class StateStore:
               JOIN articles a ON a.id = ac.article_id
              WHERE ac.category IN ({_placeholders(len(filters))})
                AND a.summarized_at IS NOT NULL
+               AND a.unusable_at IS NULL   -- defensive; see feed_items
                {saved_clause}
                {selection_clause}
              GROUP BY ac.category

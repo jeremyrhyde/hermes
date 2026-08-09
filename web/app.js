@@ -254,13 +254,55 @@ function app() {
     },
 
     toggle(item) {
-      this.expanded = this.expanded === item.article_id ? null : item.article_id;
+      const opening = this.expanded !== item.article_id;
+      this.expanded = opening ? item.article_id : null;
+      // Only on the way open. A collapse is not a second read.
+      if (opening) this._logInteraction(item, 'expand');
     },
 
     recordClick(item) {
-      // Interaction signals are captured but deliberately unused in ranking
-      // (spec 7.3, research finding R10). Phase 4 decides whether to trust them.
-      console.debug('click_through', item.article_id);
+      this._logInteraction(item, 'click_through');
+    },
+
+    /* Fire-and-forget, deliberately unlike the star and the rating: those are
+     * state the user would notice being wrong, so they revert on failure. A
+     * dropped analytics event is invisible by nature, and disturbing the UI
+     * over one would trade a silent non-problem for a visible one.
+     *
+     * Signals are logged but unused in ranking (spec 7.3, research finding
+     * R10); phase 4 decides whether to trust them. */
+    _logInteraction(item, kind) {
+      this._json(`/articles/${item.article_id}/interactions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind }),
+      }).catch(err => console.debug('interaction', kind, err));
+    },
+
+    /* Optimistic, reverting on failure. Clicking the active button clears the
+     * rating: the ratings table's CHECK (value IN (-1, 1)) makes neutral
+     * unrepresentable, so an un-clearable misclick would be permanent — and a
+     * permanent misclick is exactly the bad signal that teaches the taste
+     * profile the wrong thing. */
+    async rate(item, value) {
+      const previous = item.rating;
+      const next = previous === value ? null : value;
+      item.rating = next;
+
+      const path = `/articles/${item.article_id}/rating`;
+      const opts = next === null
+        ? { method: 'DELETE' }
+        : {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value: next }),
+          };
+      try {
+        await this._json(path, opts);
+      } catch (err) {
+        console.error('rate', err);
+        item.rating = previous;
+      }
     },
 
     // ---------------------------------------------------------------- WebSocket

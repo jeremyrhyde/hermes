@@ -309,3 +309,122 @@ async def test_summarized_event_carries_categories(store: StateStore) -> None:
 
     assert len(seen) == 1
     assert seen[0].data["item"]["categories"] == ["ai-safety", "economics"]
+
+
+# ---------------------------------------------------------------------------
+# Unusable-extraction gate — 2026-08-09-phase2-spec.md section 4
+# ---------------------------------------------------------------------------
+
+
+def _thin_refs(words: int) -> list[ArticleRef]:
+    """Refs whose feed body is below MIN_USABLE_WORDS, forcing the refetch."""
+    body = "word " * words
+    return [
+        ArticleRef(
+            source_id="acx", guid="g0", url="https://acx.substack.com/p/0",
+            title="Post 0",
+            summary_html=f"<html><body><p>{body}</p></body></html>",
+            published_at=NOW,
+        )
+    ]
+
+
+async def test_thin_after_refetch_is_never_summarized(store: StateStore) -> None:
+    """The gate's whole purpose: no API call for content we do not have."""
+    await store.upsert_source(CFG)
+    # Both the feed body and the refetched page are stubs, so the refetch
+    # cannot rescue it.
+    driver = StubDriver(_thin_refs(5), html="<html><body><p>too short</p></body></html>")
+    summarizer = StubSummarizer()
+    pipeline = await _pipeline(store, driver, summarizer)
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert summarizer.calls == 0, "the summarizer must never see unusable text"
+    cur = await store.db.execute("SELECT unusable_at, unusable_reason FROM articles")
+    row = await cur.fetchone()
+    assert row["unusable_at"] is not None
+    assert row["unusable_reason"].startswith("thin after refetch")
+
+
+async def test_paywall_stub_is_labelled_paywalled(store: StateStore) -> None:
+    await store.upsert_source(CFG)
+    driver = StubDriver(
+        _thin_refs(5),
+        html="<html><body><p>This post is for paid subscribers</p></body></html>",
+    )
+    pipeline = await _pipeline(store, driver, StubSummarizer())
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    cur = await store.db.execute("SELECT unusable_reason FROM articles")
+    assert (await cur.fetchone())["unusable_reason"] == "paywalled"
+
+
+async def test_refetch_into_usable_text_summarizes_normally(store: StateStore) -> None:
+    """The gate must not swallow the case the refetch exists to rescue."""
+    await store.upsert_source(CFG)
+    full = "<html><body><p>" + ("word " * 300) + "</p></body></html>"
+    driver, summarizer = StubDriver(_thin_refs(5), html=full), StubSummarizer()
+    pipeline = await _pipeline(store, driver, summarizer)
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert driver.fetch_calls == 1, "the thin feed body must trigger one refetch"
+    assert summarizer.calls == 1
+    cur = await store.db.execute("SELECT unusable_at FROM articles")
+    assert (await cur.fetchone())["unusable_at"] is None
+
+
+async def test_unusable_article_is_not_reprocessed_on_the_next_poll(
+    store: StateStore,
+) -> None:
+    """The behavioral half of the required exclusion.
+
+    The query-level assertion in test_unusable_and_feedback.py cannot fail
+    against a feed that already filters on summarized_at. This can: without the
+    exclusion the article comes back as pending every poll and is re-fetched
+    and re-extracted forever.
+    """
+    await store.upsert_source(CFG)
+    driver = StubDriver(_thin_refs(5), html="<html><body><p>too short</p></body></html>")
+    summarizer = StubSummarizer()
+    pipeline = await _pipeline(store, driver, summarizer)
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+    fetches_after_first = driver.fetch_calls
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert driver.fetch_calls == fetches_after_first, "must not re-fetch a terminal article"
+    assert summarizer.calls == 0
+
+
+async def test_unusable_article_never_reaches_the_feed(store: StateStore) -> None:
+    await store.upsert_source(CFG)
+    driver = StubDriver(_thin_refs(5), html="<html><body><p>too short</p></body></html>")
+    pipeline = await _pipeline(store, driver, StubSummarizer())
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert await store.feed_items() == []
+
+
+async def test_unusable_article_publishes_no_summarized_event(
+    store: StateStore,
+) -> None:
+    """A card that never renders must not announce itself over the WebSocket."""
+    await store.upsert_source(CFG)
+    bus = EventBus()
+    seen: list[Event] = []
+
+    async def collect(event: Event) -> None:
+        seen.append(event)
+
+    bus.subscribe(EventType.ARTICLE_SUMMARIZED, collect)
+    driver = StubDriver(_thin_refs(5), html="<html><body><p>too short</p></body></html>")
+    pipeline = await _pipeline(store, driver, StubSummarizer(), bus=bus)
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert seen == []

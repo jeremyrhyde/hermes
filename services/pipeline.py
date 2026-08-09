@@ -21,7 +21,11 @@ from core.state import StateStore, parse_iso, utcnow
 from schemas.article import Article, ArticleRef
 from schemas.events import Event, EventType
 from schemas.source import SourceConfig
-from services.extraction import MIN_USABLE_WORDS, extract_text
+from services.extraction import (
+    MIN_USABLE_WORDS,
+    extract_text,
+    unusable_reason,
+)
 from services.sources.base import PollState
 from services.sources.registry import SourceRegistry
 from services.summarizer import Summarizer
@@ -166,6 +170,12 @@ class Pipeline:
                 return False
             row = await self._store.get_article_row(article_id)
 
+        # Terminal, and not a failure: the extract stage decided we do not have
+        # this article's text. Returning True keeps it out of the poll's failure
+        # count, which is reserved for things worth retrying.
+        if row["unusable_at"] is not None:
+            return True
+
         if row["summarized_at"] is None:
             try:
                 async with self._summarize_sem:
@@ -204,8 +214,32 @@ class Pipeline:
             html = await driver.fetch_html(fetch_ref)
             result = extract_text(html)
 
-        if not result.text:
-            raise ValueError("extraction produced no text")
+        # Still too thin after the one refetch that exists to rescue it: we do
+        # not have this article's text and never will without credentials, which
+        # the spec rules out. Save what we got so the row leaves the extract
+        # queue and a future re-evaluation needs no refetch, mark it terminally
+        # unusable, and stop. Summarizing it anyway is how #17 got five
+        # <UNKNOWN> bullets and #26 got five confident sentences about other
+        # articles' teasers — the second being far worse, because a reader
+        # cannot tell it is fabricated and neither can the scorer.
+        #
+        # A refetch that *throws* is a different thing: that stays on the error
+        # path and retries, because it may well be transient.
+        if result.word_count < MIN_USABLE_WORDS:
+            reason = unusable_reason(result)
+            logger.info(
+                "pipeline: article %d is unusable (%s); skipping summarization",
+                article_id, reason,
+            )
+            await self._store.save_extraction(
+                article_id,
+                text=result.text,
+                word_count=result.word_count,
+                raw_html=html,
+                extracted_at=now,
+            )
+            await self._store.mark_unusable(article_id, reason, now)
+            return
 
         await self._store.save_extraction(
             article_id,
