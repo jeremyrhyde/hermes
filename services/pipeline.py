@@ -34,8 +34,17 @@ from services.urls import canonicalize_url
 
 logger = logging.getLogger(__name__)
 
-#: How many articles may be summarized concurrently. Summarization is the only
-#: stage that touches a paid API, so it is the only one worth bounding.
+#: How many articles may be summarized concurrently.
+#:
+#: Scoring also touches a paid API and is deliberately NOT bounded, because
+#: nothing can currently contend for either: ``_advance`` runs sequentially over
+#: its articles and ``Poller.poll_due`` runs sequentially over its sources, so at
+#: most one paid call is in flight process-wide. This semaphore is therefore
+#: vestigial today and kept for the shape it will need again.
+#:
+#: The asymmetry only bites if polling is ever parallelized across sources:
+#: summarization would stay bounded at 4 while scoring went unbounded. Bound
+#: scoring at the same time you parallelize, not after.
 SUMMARIZE_CONCURRENCY = 4
 
 
