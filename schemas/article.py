@@ -1,4 +1,8 @@
-"""Article, summary, score, and feed-card schemas.
+"""Article, summary, and feed-card schemas.
+
+``Score`` lives in :mod:`schemas.scoring`, not here — phase 4 adds the taste
+profile and rubric models beside it, and this module was already the catch-all
+that had swallowed it by default rather than by decision.
 
 Every model sets ``extra="ignore"`` and defaults optional fields, so adding a
 field never breaks a stored row or an in-flight payload (spec section 12.1).
@@ -70,19 +74,6 @@ class Summary(BaseModel):
     # Validated against the configured vocabulary by the summarizer, not here:
     # an unknown tag is dropped, never an error (spec 5.2).
     categories: list[str] = Field(default_factory=list, max_length=5)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class Score(BaseModel):
-    """0-100 with the inputs that produced it (spec 12.4). Unused until phase 3."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    score: int = Field(ge=0, le=100)
-    rationale: str | None = None
-    rubric_version: str
-    profile_version: str
-    signals: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

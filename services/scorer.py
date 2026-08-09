@@ -22,14 +22,11 @@ nothing to carry on with, so it raises.
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Protocol
 
 from schemas.article import Article, Summary
 from schemas.scoring import Score
 from services.rubric import RUBRIC, RUBRIC_VERSION
-
-logger = logging.getLogger(__name__)
 
 # The bounds are declared here *and* checked after the call. A JSON-schema
 # bound is a hint the API does not enforce — the same lesson the category

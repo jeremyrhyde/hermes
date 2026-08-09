@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from schemas.article import Article, FeedItem, Score, Summary
+from schemas.article import Article, FeedItem, Summary
 from schemas.source import SourceConfig, SourceRef
 
 
@@ -44,17 +44,6 @@ def test_summary_requires_exactly_five_bullets() -> None:
     ok = Summary(headline="H", bullets=["a"] * 5, model="m", prompt_version="v1")
     assert len(ok.bullets) == 5
     assert ok.metadata == {}
-
-
-def test_score_carries_signals_and_versions() -> None:
-    """Spec 12.4: score is decomposable, not an opaque number."""
-    s = Score(score=74, rationale="why", rubric_version="v1", profile_version="p1")
-    assert s.signals == {}
-    s2 = Score(
-        score=74, rationale="why", rubric_version="v1", profile_version="p1",
-        signals={"recency": 0.4, "topic_match": 0.9},
-    )
-    assert s2.signals["topic_match"] == 0.9
 
 
 def test_feed_item_carries_source_ref() -> None:

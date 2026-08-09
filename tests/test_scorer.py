@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
-import pytest
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+from pydantic import ValidationError
+
+from schemas.article import Article, Summary
+from schemas.scoring import Score
 from services.rubric import RUBRIC, RUBRIC_VERSION
+from services.scorer import SCORE_TOOL, ClaudeScorer, ScoringError
 
 
 def test_rubric_version_is_pinned() -> None:
@@ -26,13 +33,6 @@ def test_rubric_is_a_frozen_constant_not_a_template() -> None:
     """No runtime interpolation: an edit must be a git diff and a version bump."""
     assert "{" not in RUBRIC and "}" not in RUBRIC
 
-
-from unittest.mock import AsyncMock, MagicMock
-from datetime import datetime, timezone
-
-from schemas.article import Article, Summary
-from schemas.scoring import Score
-from services.scorer import SCORE_TOOL, ClaudeScorer, ScoringError
 
 NOW = datetime(2026, 8, 9, tzinfo=timezone.utc)
 
@@ -93,22 +93,36 @@ async def test_scoring_is_deterministic_by_construction() -> None:
 
 
 async def test_scoring_does_not_send_the_article_text() -> None:
-    """The summary is the decision surface, and 10x cheaper."""
+    """The summary is the decision surface, and 10x cheaper.
+
+    Asserted against the *whole* call, not just ``messages``. Checking only
+    the user turn would stay green if a refactor moved article context into
+    the system prompt — leaving the test passing while the property it is
+    named for was broken.
+    """
     client = _client({"score": 50, "rationale": "r"})
     await _scorer(client).score(ARTICLE, SUMMARY)
 
-    sent = str(client.messages.create.await_args.kwargs["messages"])
-    assert "body text" not in sent
-    assert "Export controls compress margins" in sent
+    whole_call = str(client.messages.create.await_args)
+    assert ARTICLE.text not in whole_call
+    assert "Export controls compress margins" in whole_call
 
 
 async def test_scoring_sends_the_profile_independent_context() -> None:
+    """The evidence the model judges, and the proof it is profile-free.
+
+    The name promises independence, so the test asserts it: the profile must
+    reach the model as *judgment* in the system prompt and never contaminate
+    the user turn, which is the evidence. Without the negative assertion this
+    was only a field-presence check wearing a stronger name.
+    """
     client = _client({"score": 50, "rationale": "r"})
     await _scorer(client).score(ARTICLE, SUMMARY)
 
     sent = str(client.messages.create.await_args.kwargs["messages"])
-    for expected in ("Export controls and margins", "ai", "markets", "1200"):
+    for expected in ("Export controls and margins", "Categories: ai, markets", "1200"):
         assert expected in sent
+    assert "I like X" not in sent, "the profile belongs in the system prompt only"
 
 
 async def test_signals_record_what_the_model_saw() -> None:
@@ -144,3 +158,57 @@ async def test_api_failure_becomes_a_scoring_error() -> None:
 
     with pytest.raises(ScoringError):
         await _scorer(client).score(ARTICLE, SUMMARY)
+
+
+@pytest.mark.parametrize("bad", [True, False, "82", 82.0, None])
+async def test_non_integer_scores_are_rejected(bad: object) -> None:
+    """The subtlest line in the scorer, and the easiest to delete by accident.
+
+    ``isinstance(True, int)`` is True in Python, so without an explicit bool
+    guard a payload of ``{"score": true}`` becomes a perfectly valid score of
+    1 — a fabricated judgment that no range check would ever catch.
+    """
+    scorer = _scorer(_client({"score": bad, "rationale": "r"}))
+
+    with pytest.raises(ScoringError):
+        await scorer.score(ARTICLE, SUMMARY)
+
+
+# ---------------------------------------------------------------------------
+# Score, at the schema level
+#
+# Ported from tests/test_schemas_feed.py, which exercised the now-deleted
+# schemas.article.Score. That version asserted only that signals defaulted to
+# {} and that a dict round-tripped — it never tested the 0-100 bounds it was
+# credited with covering, and its optional `rationale` could not express the
+# constraint spec 12.4 actually requires.
+# ---------------------------------------------------------------------------
+
+
+def test_score_defaults_signals_and_metadata_to_empty() -> None:
+    s = Score(value=74, rationale="why", rubric_version="v1", profile_version="p1")
+    assert s.signals == {} and s.metadata == {}
+
+
+def test_score_round_trips_arbitrary_signals() -> None:
+    """Spec 12.4: a score is decomposable, not an opaque number."""
+    s = Score(value=74, rationale="why", rubric_version="v1", profile_version="p1",
+              signals={"recency": 0.4, "topic_match": 0.9})
+    assert s.signals["topic_match"] == 0.9
+
+
+@pytest.mark.parametrize("bad", [-1, 101])
+def test_score_bounds_are_enforced_by_the_schema(bad: int) -> None:
+    """Defence in depth: the scorer checks this too, on untrusted model output."""
+    with pytest.raises(ValidationError):
+        Score(value=bad, rationale="why", rubric_version="v1", profile_version="p1")
+
+
+def test_score_requires_a_rationale() -> None:
+    """Spec 12.4 declares rationale required; the phase-1 model made it optional.
+
+    This is the constraint that makes a wrong score diagnosable rather than
+    merely wrong, so it belongs in the type, not only in the scorer.
+    """
+    with pytest.raises(ValidationError):
+        Score(value=74, rubric_version="v1", profile_version="p1")
