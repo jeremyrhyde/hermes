@@ -306,5 +306,11 @@ async def test_rejected_at_defaults_to_null(tmp_path) -> None:
             "INSERT INTO profile_versions (version, body, kind, created_at)"
             " VALUES ('profile-v1', 'b', 'stated', '2026-08-09T00:00:00+00:00')"
         )
-        cur = await db.execute("SELECT rejected_at FROM profile_versions")
+        # Filtered on purpose. An unfiltered SELECT ... fetchone() passes only
+        # because nothing seeds this table today; the day a migration inserts a
+        # default profile, it would silently start asserting about whichever row
+        # SQLite happened to return first.
+        cur = await db.execute(
+            "SELECT rejected_at FROM profile_versions WHERE version = 'profile-v1'"
+        )
         assert (await cur.fetchone())[0] is None
