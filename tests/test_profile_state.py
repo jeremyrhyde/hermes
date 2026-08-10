@@ -318,3 +318,37 @@ async def test_rescore_skips_unusable_articles(store: StateStore) -> None:
     await store.mark_unusable(a, "paywalled", NOW)
 
     assert await store.clear_scores_for_rescore() == 0
+
+
+async def test_a_hand_edit_does_not_reset_the_counter(store: StateStore) -> None:
+    """Only a distillation is a review; a ``stated`` row is the reader editing.
+
+    Load-bearing for ``PUT /profile/``, which writes a ``stated`` row on every
+    profile edit. Without the ``kind = 'distilled'`` filter, fixing a typo in
+    the profile would silently discard the reader's progress toward their next
+    distillation.
+    """
+    await store.upsert_source(CFG)
+    a = await _article(store, "a")
+    await store.rate_article(a, 1, NOW)
+    await store.create_profile_version("hand-edited", "stated", True)
+
+    assert await store.ratings_since_last_review() == 1
+
+
+async def test_rescore_skips_an_article_that_became_unusable_after_scoring(
+    store: StateStore,
+) -> None:
+    """The unusable exclusion, pinned where it is the only thing excluding.
+
+    A never-scored unusable article is kept out by the ``scored_at IS NOT NULL``
+    guard as well, so it cannot tell whether the exclusion works.
+    """
+    await store.upsert_source(CFG)
+    a = await _article(store, "a")
+    await store.save_score(
+        a, Score(value=80, rationale="r", rubric_version="rubric-v1",
+                 profile_version="profile-v1"), NOW)
+    await store.mark_unusable(a, "paywalled", NOW)
+
+    assert await store.clear_scores_for_rescore() == 0
