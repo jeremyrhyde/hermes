@@ -113,6 +113,50 @@ async def test_an_empty_proposal_is_rejected(bad) -> None:
         await distiller.propose("old", RATED)
 
 
+async def test_proposal_sends_the_tool_it_forces() -> None:
+    """A dropped `tools` or a drifted name passes every other test and 400s live.
+
+    The same class of defect as the phase-3 sampling parameter: a live-API
+    contract, so it is asserted on the outgoing call.
+    """
+    client = _client({"profile": "body"})
+    await _distiller(client).propose("old", RATED)
+
+    kwargs = client.messages.create.await_args.kwargs
+    assert kwargs["tools"] == [DISTILL_TOOL]
+    assert kwargs["tool_choice"]["name"] == DISTILL_TOOL["name"]
+
+
+async def test_a_truncated_response_is_rejected() -> None:
+    """A body cut off mid-sentence is indistinguishable from a short one."""
+    client = _client({"profile": "half a prof"})
+    client.messages.create.return_value.stop_reason = "max_tokens"
+
+    with pytest.raises(DistillationError):
+        await _distiller(client).propose("old", RATED)
+
+
+@pytest.mark.parametrize("bad", [None, 0, 2, "1"])
+async def test_an_unexpected_rating_is_rejected(bad) -> None:
+    """Guessing the direction would invert the reader's verdict silently."""
+    rated = [{"headline": "h", "bullets": [], "categories": [],
+              "score": 50, "rating": bad}]
+
+    with pytest.raises(DistillationError):
+        await _distiller(_client({"profile": "body"})).propose("old", rated)
+
+
+async def test_a_missing_headline_is_not_sent_as_the_string_none() -> None:
+    client = _client({"profile": "body"})
+    await _distiller(client).propose(
+        "old",
+        [{"bullets": [], "categories": [], "score": 50, "rating": -1}],
+    )
+
+    messages = str(client.messages.create.await_args.kwargs["messages"])
+    assert "None" not in messages
+
+
 async def test_an_unscored_article_is_not_sent_as_the_string_none() -> None:
     """`rated_articles()` returns score=None for a rated-but-unscored article.
 
@@ -139,3 +183,13 @@ async def test_proposing_from_no_ratings_is_rejected() -> None:
     """There is nothing to distill; the threshold should have prevented this."""
     with pytest.raises(DistillationError):
         await _distiller(_client({"profile": "body"})).propose("old", [])
+
+
+async def test_no_ratings_is_rejected_without_calling_the_api() -> None:
+    """The given test above passes either side of the call; pin which."""
+    client = _client({"profile": "body"})
+
+    with pytest.raises(DistillationError):
+        await _distiller(client).propose("old", [])
+
+    client.messages.create.assert_not_awaited()

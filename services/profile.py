@@ -22,6 +22,11 @@ stores the body as a pending version and the reader approves, edits, or rejects
 it. That gate is also what enforces the prompt's instruction to preserve the
 reader's stated criteria — a soft constraint by construction, which is precisely
 why a human sits between the proposal and the scoring function.
+
+Errors here carry no identifying context, which is the one visible difference in
+shape from the scorer. The scorer names an article id because it runs per
+article across a batch; a distillation is one call over the whole corpus, one at
+a time, and there is no natural key to name.
 """
 
 from __future__ import annotations
@@ -50,6 +55,12 @@ and on what distinguishes them from the agreements. Name the distinguishing \
 property, not the topic: "treats a market through a supply constraint" is a \
 property, "about markets" is a topic, and a profile written in topics scores \
 every article on the same subject alike.
+
+THE CATEGORIES.
+The categories on each card are topical labels from an earlier stage. Read them \
+to see what an article was about; do not carry them into the profile as \
+vocabulary. A category that correlates with the ratings is usually standing in \
+for a property you have not named yet — name the property.
 
 WHAT TO PRESERVE.
 The reader's stated criteria are theirs. Where the profile states what the \
@@ -114,8 +125,8 @@ class ProfileDistiller:
         """Propose a replacement body for ``current`` from ``rated``.
 
         ``rated`` is the whole corpus, newest rating first, and is deliberately
-        uncapped — see the module note in the plan. Truncation, if it is ever
-        needed, is the caller's decision and is safe in that order.
+        uncapped — spec §10.4, "the rated corpus is unbounded". Truncation, if
+        it is ever needed, is the caller's decision and is safe in that order.
         """
         if not rated:
             # The caller's threshold should have prevented this. Reaching here
@@ -127,11 +138,14 @@ class ProfileDistiller:
             response = await self._client.messages.create(
                 model=self._model,
                 # Caps thinking *and* response together — adaptive thinking is
-                # on by default on Claude 5 models. Twice the scorer's budget:
-                # its response is one integer and a few sentences, whereas a
-                # whole profile body is the response here, and the reasoning
-                # that precedes it has the entire rated corpus to work through.
-                max_tokens=8192,
+                # on by default on Claude 5 models. Four times the scorer's
+                # budget: its response is one integer and a few sentences,
+                # whereas a whole profile body is the response here, and
+                # thinking at high effort has to work through every card in the
+                # corpus before the body starts. Headroom is free — tokens are
+                # billed as generated, not as reserved — and the corpus only
+                # grows past the threshold that triggered the run.
+                max_tokens=16384,
                 # No `temperature`/`top_p`/`top_k`: Claude 5 models reject all
                 # three outright with a 400. Effort is not a sampling knob and
                 # travels in `output_config`.
@@ -145,6 +159,16 @@ class ProfileDistiller:
             )
         except Exception as exc:
             raise DistillationError(f"Anthropic API call failed: {exc}") from exc
+
+        # Checked because a truncated profile is indistinguishable from a short
+        # one. Running out of budget mid-JSON surfaces loudly, but running out
+        # after the `profile` string has parsed and before the document is
+        # finished yields a non-blank body that `_clean_profile` accepts and the
+        # reader reviews as a proposal that stops mid-sentence.
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            raise DistillationError(
+                "the response hit max_tokens; the profile may be truncated"
+            )
 
         payload = self._extract_tool_input(response)
         return self._clean_profile(payload.get("profile"))
@@ -166,7 +190,12 @@ class ProfileDistiller:
     @staticmethod
     def _render(article: dict) -> str:
         """Render one rated article as the reader saw it, plus their verdict."""
+        # Never inferred from "not 1". A missing or unexpected rating rendered
+        # as a down-vote would invert the reader's verdict — the one signal the
+        # whole feature turns on — and nothing downstream could tell.
         rating = article.get("rating")
+        if rating not in (1, -1):
+            raise DistillationError(f"unexpected rating {rating!r}")
         verdict = "+1 (rated up)" if rating == 1 else "-1 (rated down)"
 
         # `rated_articles()` returns `score: None` for an article rated but
@@ -175,13 +204,17 @@ class ProfileDistiller:
         score = article.get("score")
         score_text = "not scored" if score is None else str(score)
 
+        # Same absence-is-not-a-value rule as the score: a missing headline
+        # would otherwise reach the prompt as the string "None".
+        headline = str(article.get("headline") or "").strip() or "(no headline)"
+
         bullets = article.get("bullets") or []
         categories = article.get("categories") or []
 
         return (
             f"Rating: {verdict}\n"
             f"Score under the current profile: {score_text}\n"
-            f"Headline: {article.get('headline')}\n"
+            f"Headline: {headline}\n"
             "Bullets:\n"
             + "".join(f"- {bullet}\n" for bullet in bullets)
             + f"Categories: {', '.join(categories) or 'none'}\n"
