@@ -748,6 +748,92 @@ class StateStore:
         )
         await self.db.commit()
 
+    async def create_profile_version(
+        self, body: str, kind: str, approved: bool
+    ) -> str:
+        """Append a profile version and return its name.
+
+        The single writer of the ``profile-vN`` scheme, so N lives in one place.
+        N counts *rows*, not approved profiles: a rejected proposal consumes a
+        number, and an approved sequence can therefore read v1, v3, v6. That is
+        the point — every number identifies exactly one body, which is what a
+        :class:`Score`'s ``profile_version`` stamp needs to stay resolvable.
+
+        *approved* writes ``approved_at`` immediately, for versions with nobody
+        to review them; leaving it false is what makes the row a proposal that
+        :meth:`latest_profile` will not serve until :meth:`resolve_proposal`
+        settles it.
+        """
+
+        cur = await self.db.execute("SELECT COUNT(*) AS n FROM profile_versions")
+        version = f"profile-v{(await cur.fetchone())['n'] + 1}"
+        now = iso(utcnow())
+        await self.db.execute(
+            """
+            INSERT INTO profile_versions
+                (version, body, kind, created_at, approved_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (version, body, kind, now, now if approved else None),
+        )
+        await self.db.commit()
+        return version
+
+    async def pending_proposal(self) -> dict | None:
+        """The unreviewed proposal, or ``None`` when nothing awaits review.
+
+        Pending is the state where neither timestamp is set. At most one row
+        should be in it at a time — the distiller only proposes when nothing is
+        outstanding — but the query takes the newest regardless rather than
+        assuming it.
+        """
+
+        cur = await self.db.execute(
+            """
+            SELECT version, body, created_at FROM profile_versions
+             WHERE approved_at IS NULL AND rejected_at IS NULL
+             ORDER BY created_at DESC, rowid DESC LIMIT 1
+            """
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def resolve_proposal(
+        self, version: str, approved: bool, body: str | None = None
+    ) -> bool:
+        """Approve or reject a pending proposal. Returns whether one existed.
+
+        *body* is the one legal mutation of a version's text. Editing a version
+        in place is otherwise forbidden, because scores point at versions and
+        rewriting one would silently change what an existing score meant — but a
+        *pending* row has nothing pointing at it and is not yet history, so the
+        reader may approve an amended draft. ``COALESCE`` leaves the body alone
+        when no edit was supplied. ``kind`` is untouched: an edited proposal is
+        still ``'distilled'``, since the reader amended it rather than authored
+        it.
+
+        The WHERE clause matches pending rows only, which is what makes an
+        approved or rejected row immutable and a second resolve report ``False``.
+        Existence comes from ``RETURNING`` for the reason spelled out on
+        :meth:`save_article`: an UPDATE writing an unchanged body reports zero
+        rows affected, so ``rowcount`` cannot tell "no such pending row" from
+        "approved without editing".
+        """
+
+        now = iso(utcnow())
+        return await self._update_exists(
+            """
+            UPDATE profile_versions
+               SET body = COALESCE(?, body),
+                   approved_at = ?,
+                   rejected_at = ?
+             WHERE version = ?
+               AND approved_at IS NULL AND rejected_at IS NULL
+            RETURNING version
+            """,
+            (body, now if approved else None, None if approved else now, version),
+        )
+
     async def _article_exists(self, article_id: int) -> bool:
         cur = await self.db.execute(
             "SELECT 1 FROM articles WHERE id = ?", (article_id,)
