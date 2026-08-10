@@ -14,6 +14,14 @@ profile-independent: headline, bullets, title, source, categories, publication
 date, word count. The profile touches judgment, never evidence, so a profile
 edit can change the verdict but never the facts the verdict was reached from.
 
+**The profile is an argument, not state.** It is the one half of the scoring
+function that changes while the process runs: the reader approves a distilled
+profile and the live one moves. A scorer that captured it at construction went
+on judging against the profile the process booted with — and stamping that
+version onto rows produced long after — until someone restarted. It arrives per
+call instead, as a :class:`Profile` carrying the body and its version together
+so a score can never name a profile it was not judged against.
+
 **A bad response is fatal, not droppable.** The summarizer drops a hallucinated
 category and keeps the bullets, because the bullets are the product. Here the
 score *is* the product: an out-of-range number or an empty rationale leaves
@@ -22,6 +30,7 @@ nothing to carry on with, so it raises.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from schemas.article import Article, Summary
@@ -72,8 +81,41 @@ class ScoringError(RuntimeError):
     """Raised when a score could not be produced. Recorded as a stage error."""
 
 
+@dataclass(frozen=True)
+class Profile:
+    """The taste profile a score was judged against: body and version, together.
+
+    One value rather than two arguments, because the failure this type exists to
+    prevent is exactly the two disagreeing. Phase 4 made the live profile a
+    moving target — the reader approves a distillation and the newest approved
+    row changes — so a scorer that took the body and the version separately
+    could be handed a fresh body with a stale stamp, producing rows that name a
+    profile they were not judged against. ``profile_version`` is the column
+    phase 4's before/after comparison is keyed on, so a wrong stamp is worse
+    than a missing score: the numbers look right and the attribution is wrong.
+
+    Built only by :meth:`from_state`, off a single row, so the pair cannot be
+    assembled from two reads taken at different times.
+    """
+
+    version: str
+    body: str
+
+    @classmethod
+    def from_state(cls, pair: tuple[str, str] | None) -> Profile | None:
+        """Adapt :meth:`core.state.StateStore.latest_profile`'s return.
+
+        ``None`` in means no approved profile exists, which is not an error:
+        scoring is skipped and the article stays readable and unscored.
+        """
+
+        return None if pair is None else cls(version=pair[0], body=pair[1])
+
+
 class Scorer(Protocol):
-    async def score(self, article: Article, summary: Summary) -> Score: ...
+    async def score(
+        self, article: Article, summary: Summary, profile: Profile
+    ) -> Score: ...
 
 
 class ClaudeScorer:
@@ -84,8 +126,6 @@ class ClaudeScorer:
         client: Any,
         *,
         model: str,
-        profile_body: str,
-        profile_version: str,
         rubric: str = RUBRIC,
         rubric_version: str = RUBRIC_VERSION,
         effort: str = "high",
@@ -97,18 +137,18 @@ class ClaudeScorer:
         # change to the default would move scores with nothing in the row to
         # explain why — the same reason the rubric and profile are versioned.
         self._effort = effort
-        self._profile_version = profile_version
+        self._rubric = rubric
         self._rubric_version = rubric_version
-        # Rubric first, profile second: the rubric says how to apply the
-        # profile, so it reads as instructions followed by the material they
-        # operate on. Both are system content — they are the scoring function,
-        # constant across every article, and nothing about the article belongs
-        # beside them.
-        self._system_prompt = (
-            f"{rubric}\n\nREADER PROFILE (version {profile_version}).\n{profile_body}"
-        )
+        # No profile is held here. The rubric is frozen at import and versioned
+        # by a git diff, so caching it is safe; the profile changes underneath a
+        # running process every time the reader approves a distillation, and a
+        # scorer that captured one at construction went on judging against it
+        # forever — the process could only be corrected by a restart. It arrives
+        # per call instead, from whoever knows when a run begins.
 
-    async def score(self, article: Article, summary: Summary) -> Score:
+    async def score(
+        self, article: Article, summary: Summary, profile: Profile
+    ) -> Score:
         try:
             response = await self._client.messages.create(
                 model=self._model,
@@ -126,7 +166,7 @@ class ClaudeScorer:
                 # concern stands and its remedy does not: the rubric being
                 # frozen and versioned is now the whole of the defense.
                 output_config={"effort": self._effort},
-                system=self._system_prompt,
+                system=self._build_system_prompt(profile),
                 tools=[SCORE_TOOL],
                 tool_choice={"type": "tool", "name": "emit_score"},
                 messages=[
@@ -144,13 +184,33 @@ class ClaudeScorer:
             value=self._clean_value(payload.get("score"), article.id),
             rationale=self._clean_rationale(payload.get("rationale"), article.id),
             rubric_version=self._rubric_version,
-            profile_version=self._profile_version,
+            # From the same value whose body was sent above, so the stamp and
+            # the text it names cannot come apart.
+            profile_version=profile.version,
             signals={
                 "inputs": list(SCORING_INPUTS),
                 "summary_prompt_version": summary.prompt_version,
                 "model": self._model,
                 "effort": self._effort,
             },
+        )
+
+    def _build_system_prompt(self, profile: Profile) -> str:
+        """Assemble the scoring function: rubric, then the profile it applies.
+
+        Rubric first, profile second: the rubric says how to apply the profile,
+        so it reads as instructions followed by the material they operate on.
+        Both are system content — they are constant across every article in a
+        run, and nothing about the article belongs beside them.
+
+        Per call rather than per scorer. Formatting two strings costs nothing
+        next to the API call it precedes, and doing it here is what lets a
+        profile approved five minutes ago reach the very next score.
+        """
+
+        return (
+            f"{self._rubric}\n\nREADER PROFILE (version {profile.version}).\n"
+            f"{profile.body}"
         )
 
     @staticmethod

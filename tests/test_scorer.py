@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from schemas.article import Article, Summary
 from schemas.scoring import Score
 from services.rubric import RUBRIC, RUBRIC_VERSION
-from services.scorer import SCORE_TOOL, ClaudeScorer, ScoringError
+from services.scorer import SCORE_TOOL, ClaudeScorer, Profile, ScoringError
 
 
 def test_rubric_version_is_pinned() -> None:
@@ -60,9 +60,11 @@ def _client(payload: dict) -> MagicMock:
     return client
 
 
+PROFILE = Profile(version="profile-v1", body="I like X")
+
+
 def _scorer(client) -> ClaudeScorer:
-    return ClaudeScorer(client, model="m", profile_body="I like X",
-                        profile_version="profile-v1")
+    return ClaudeScorer(client, model="m")
 
 
 def test_score_tool_bounds_the_range() -> None:
@@ -75,7 +77,7 @@ async def test_scoring_stamps_both_versions() -> None:
     """A profile update must never be mistaken for a rubric change."""
     scorer = _scorer(_client({"score": 82, "rationale": "ai x markets"}))
 
-    result = await scorer.score(ARTICLE, SUMMARY)
+    result = await scorer.score(ARTICLE, SUMMARY, PROFILE)
 
     assert result.value == 82
     assert result.rubric_version == RUBRIC_VERSION
@@ -91,7 +93,7 @@ async def test_scoring_never_sends_a_sampling_parameter() -> None:
     every scorer test mocks the client.
     """
     client = _client({"score": 50, "rationale": "r"})
-    await _scorer(client).score(ARTICLE, SUMMARY)
+    await _scorer(client).score(ARTICLE, SUMMARY, PROFILE)
 
     kwargs = client.messages.create.await_args.kwargs
     for banned in ("temperature", "top_p", "top_k"):
@@ -101,7 +103,7 @@ async def test_scoring_never_sends_a_sampling_parameter() -> None:
 async def test_scoring_forces_the_tool_and_pins_effort() -> None:
     """Effort replaces temperature as the knob, so it is set, not defaulted."""
     client = _client({"score": 50, "rationale": "r"})
-    await _scorer(client).score(ARTICLE, SUMMARY)
+    await _scorer(client).score(ARTICLE, SUMMARY, PROFILE)
 
     kwargs = client.messages.create.await_args.kwargs
     assert kwargs["tool_choice"] == {"type": "tool", "name": "emit_score"}
@@ -115,7 +117,7 @@ async def test_max_tokens_leaves_room_for_thinking() -> None:
     thinking that precedes it.
     """
     client = _client({"score": 50, "rationale": "r"})
-    await _scorer(client).score(ARTICLE, SUMMARY)
+    await _scorer(client).score(ARTICLE, SUMMARY, PROFILE)
 
     assert client.messages.create.await_args.kwargs["max_tokens"] >= 4096
 
@@ -123,7 +125,7 @@ async def test_max_tokens_leaves_room_for_thinking() -> None:
 async def test_signals_record_the_model_and_effort() -> None:
     """Both change scores, so both belong in the row that explains one."""
     result = await _scorer(_client({"score": 50, "rationale": "r"})).score(
-        ARTICLE, SUMMARY
+        ARTICLE, SUMMARY, PROFILE
     )
 
     assert result.signals["model"] == "m"
@@ -139,7 +141,7 @@ async def test_scoring_does_not_send_the_article_text() -> None:
     named for was broken.
     """
     client = _client({"score": 50, "rationale": "r"})
-    await _scorer(client).score(ARTICLE, SUMMARY)
+    await _scorer(client).score(ARTICLE, SUMMARY, PROFILE)
 
     whole_call = str(client.messages.create.await_args)
     assert ARTICLE.text not in whole_call
@@ -155,7 +157,7 @@ async def test_scoring_sends_the_profile_independent_context() -> None:
     was only a field-presence check wearing a stronger name.
     """
     client = _client({"score": 50, "rationale": "r"})
-    await _scorer(client).score(ARTICLE, SUMMARY)
+    await _scorer(client).score(ARTICLE, SUMMARY, PROFILE)
 
     sent = str(client.messages.create.await_args.kwargs["messages"])
     for expected in ("Export controls and margins", "Categories: ai, markets", "1200"):
@@ -167,7 +169,7 @@ async def test_signals_record_what_the_model_saw() -> None:
     """Makes the summary-bottleneck question answerable later."""
     scorer = _scorer(_client({"score": 50, "rationale": "r"}))
 
-    result = await scorer.score(ARTICLE, SUMMARY)
+    result = await scorer.score(ARTICLE, SUMMARY, PROFILE)
 
     assert "bullets" in result.signals["inputs"]
     assert result.signals["summary_prompt_version"] == "summary-v3"
@@ -179,7 +181,7 @@ async def test_out_of_range_scores_are_rejected(bad: int) -> None:
     scorer = _scorer(_client({"score": bad, "rationale": "r"}))
 
     with pytest.raises(ScoringError):
-        await scorer.score(ARTICLE, SUMMARY)
+        await scorer.score(ARTICLE, SUMMARY, PROFILE)
 
 
 async def test_a_missing_rationale_is_rejected() -> None:
@@ -187,7 +189,7 @@ async def test_a_missing_rationale_is_rejected() -> None:
     scorer = _scorer(_client({"score": 70, "rationale": "   "}))
 
     with pytest.raises(ScoringError):
-        await scorer.score(ARTICLE, SUMMARY)
+        await scorer.score(ARTICLE, SUMMARY, PROFILE)
 
 
 async def test_api_failure_becomes_a_scoring_error() -> None:
@@ -195,7 +197,7 @@ async def test_api_failure_becomes_a_scoring_error() -> None:
     client.messages.create = AsyncMock(side_effect=RuntimeError("boom"))
 
     with pytest.raises(ScoringError):
-        await _scorer(client).score(ARTICLE, SUMMARY)
+        await _scorer(client).score(ARTICLE, SUMMARY, PROFILE)
 
 
 @pytest.mark.parametrize("bad", [True, False, "82", 82.0, None])
@@ -209,7 +211,73 @@ async def test_non_integer_scores_are_rejected(bad: object) -> None:
     scorer = _scorer(_client({"score": bad, "rationale": "r"}))
 
     with pytest.raises(ScoringError):
-        await scorer.score(ARTICLE, SUMMARY)
+        await scorer.score(ARTICLE, SUMMARY, PROFILE)
+
+
+# ---------------------------------------------------------------------------
+# The profile is an argument, not construction state
+#
+# Before phase 4 the profile was baked into the system prompt in __init__, so a
+# profile the reader approved at runtime reached nothing: the process kept
+# scoring against whatever was live at boot while stamping the boot version.
+# ---------------------------------------------------------------------------
+
+
+async def test_the_body_sent_is_the_body_of_the_version_stamped() -> None:
+    """The two halves of a profile must not be able to disagree.
+
+    They arrive as one value and are read from it in one place, so a score
+    stamped ``profile-v7`` was necessarily judged against v7's text.
+    """
+    client = _client({"score": 50, "rationale": "r"})
+    profile = Profile(version="profile-v7", body="I like octopuses")
+
+    result = await _scorer(client).score(ARTICLE, SUMMARY, profile)
+
+    system = client.messages.create.await_args.kwargs["system"]
+    assert profile.body in system
+    assert profile.version in system
+    assert result.profile_version == profile.version
+
+
+async def test_one_scorer_follows_the_profile_it_is_handed() -> None:
+    """A newly approved profile takes effect with no restart and no rebuild.
+
+    Same scorer object, two profiles, two different system prompts and stamps —
+    the property the frozen ``self._system_prompt`` made impossible.
+    """
+    client = _client({"score": 50, "rationale": "r"})
+    scorer = _scorer(client)
+
+    first = await scorer.score(ARTICLE, SUMMARY, Profile("profile-v1", "old taste"))
+    old_system = client.messages.create.await_args.kwargs["system"]
+    second = await scorer.score(ARTICLE, SUMMARY, Profile("profile-v2", "new taste"))
+    new_system = client.messages.create.await_args.kwargs["system"]
+
+    assert first.profile_version == "profile-v1"
+    assert second.profile_version == "profile-v2"
+    assert "old taste" in old_system and "old taste" not in new_system
+    assert "new taste" in new_system
+
+
+def test_the_scorer_keeps_no_profile_of_its_own() -> None:
+    """Nothing to go stale: there is no profile state to refresh or forget to."""
+    scorer = _scorer(_client({"score": 50, "rationale": "r"}))
+
+    assert not [name for name in vars(scorer) if "profile" in name]
+
+
+async def test_the_rubric_still_precedes_the_profile() -> None:
+    """Instructions, then the material they operate on — unchanged by phase 4.
+
+    Assembling the prompt per call rather than per scorer is the only thing
+    that moved; the order it assembles in is load-bearing and did not.
+    """
+    client = _client({"score": 50, "rationale": "r"})
+    await _scorer(client).score(ARTICLE, SUMMARY, PROFILE)
+
+    system = client.messages.create.await_args.kwargs["system"]
+    assert system.index(RUBRIC) < system.index(PROFILE.body)
 
 
 # ---------------------------------------------------------------------------

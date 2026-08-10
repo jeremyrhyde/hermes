@@ -13,7 +13,7 @@ from schemas.events import Event, EventType
 from schemas.scoring import Score
 from schemas.source import SourceConfig
 from services.pipeline import Pipeline
-from services.scorer import ScoringError
+from services.scorer import Profile, ScoringError
 from services.sources.base import PollState, SourceDriver
 from services.sources.registry import SourceRegistry
 from services.summarizer import SummarizationError
@@ -441,17 +441,29 @@ class StubScorer:
     def __init__(self, fail: bool = False) -> None:
         self.calls = 0
         self._fail = fail
+        #: Every profile this scorer was handed, in call order. The pipeline
+        #: reads the live profile per run, so this is what those runs saw.
+        self.profiles: list[Profile] = []
 
-    async def score(self, article, summary):
+    async def score(self, article, summary, profile):
         self.calls += 1
+        self.profiles.append(profile)
         if self._fail:
             raise ScoringError("stub failure")
+        # Stamped from the profile handed in, exactly as ClaudeScorer does —
+        # a stub that stamped a constant could not fail the staleness tests.
         return Score(value=77, rationale="r", rubric_version="rubric-v1",
-                     profile_version="profile-v1")
+                     profile_version=profile.version)
+
+
+async def _seed_profile(store: StateStore, body: str = "I like X") -> None:
+    """Scoring needs a live profile now that the pipeline reads one per run."""
+    await store.seed_profile("profile-v1", body)
 
 
 async def test_summarized_articles_are_scored(store: StateStore) -> None:
     await store.upsert_source(CFG)
+    await _seed_profile(store)
     scorer = StubScorer()
     driver, summarizer = StubDriver(_refs(2)), StubSummarizer()
     pipeline = await _pipeline(store, driver, summarizer, scorer=scorer)
@@ -477,6 +489,7 @@ async def test_a_scoring_failure_does_not_count_as_a_poll_failure(
 ) -> None:
     """It would drive source backoff and eventually disable a healthy source."""
     await store.upsert_source(CFG)
+    await _seed_profile(store)
     pipeline = await _pipeline(store, StubDriver(_refs(2)), StubSummarizer(),
                                scorer=StubScorer(fail=True))
 
@@ -487,6 +500,7 @@ async def test_a_scoring_failure_does_not_count_as_a_poll_failure(
 
 async def test_a_scoring_failure_leaves_the_article_readable(store: StateStore) -> None:
     await store.upsert_source(CFG)
+    await _seed_profile(store)
     pipeline = await _pipeline(store, StubDriver(_refs(1)), StubSummarizer(),
                                scorer=StubScorer(fail=True))
 
@@ -498,6 +512,7 @@ async def test_a_scoring_failure_leaves_the_article_readable(store: StateStore) 
 
 async def test_a_scoring_failure_is_retried_on_the_next_poll(store: StateStore) -> None:
     await store.upsert_source(CFG)
+    await _seed_profile(store)
     scorer = StubScorer(fail=True)
     pipeline = await _pipeline(store, StubDriver(_refs(1)), StubSummarizer(),
                                scorer=scorer)
@@ -510,6 +525,7 @@ async def test_a_scoring_failure_is_retried_on_the_next_poll(store: StateStore) 
 
 async def test_unusable_articles_are_never_scored(store: StateStore) -> None:
     await store.upsert_source(CFG)
+    await _seed_profile(store)
     scorer = StubScorer()
     driver = StubDriver(_thin_refs(5), html="<html><body><p>too short</p></body></html>")
     pipeline = await _pipeline(store, driver, StubSummarizer(), scorer=scorer)
@@ -528,6 +544,7 @@ async def test_scoring_publishes_an_article_scored_event(store: StateStore) -> N
         seen.append(event)
 
     bus.subscribe(EventType.ARTICLE_SCORED, collect)
+    await _seed_profile(store)
     pipeline = await _pipeline(store, StubDriver(_refs(1)), StubSummarizer(),
                                bus=bus, scorer=StubScorer())
 
@@ -535,3 +552,155 @@ async def test_scoring_publishes_an_article_scored_event(store: StateStore) -> N
 
     assert len(seen) == 1
     assert seen[0].data["score"] == 77
+
+
+# ---------------------------------------------------------------------------
+# The live profile — 2026-08-09-phase3-scoring-spec.md, phase 4
+#
+# The profile used to be baked into the scorer at construction, so approving a
+# new one changed the database and nothing else: the process kept judging
+# against the boot profile while stamping the boot version. The pipeline now
+# reads the live profile once per run and hands it to the scorer, so approval
+# takes effect on the next poll with no restart.
+# ---------------------------------------------------------------------------
+
+
+async def test_an_approved_profile_takes_effect_on_the_next_run(
+    store: StateStore,
+) -> None:
+    """The whole defect, end to end: no restart, no rebuilt scorer."""
+    await store.upsert_source(CFG)
+    await _seed_profile(store, "old taste")
+    scorer = StubScorer()
+    pipeline = await _pipeline(store, StubDriver(_refs(1)), StubSummarizer(),
+                               scorer=scorer)
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    # The reader approves a distillation and asks for a re-score, exactly as
+    # POST /profile/review/{version}/approve does.
+    new_version = await store.create_profile_version("new taste", "distilled", True)
+    await store.clear_scores_for_rescore()
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert [p.version for p in scorer.profiles] == ["profile-v1", new_version]
+    assert [p.body for p in scorer.profiles] == ["old taste", "new taste"]
+
+
+async def test_the_stored_score_is_stamped_with_the_profile_that_produced_it(
+    store: StateStore,
+) -> None:
+    """The stamp is what phase 4's before/after comparison is keyed on.
+
+    Re-scoring under the old body while claiming the new version would be worse
+    than not re-scoring at all: the counts would look right and the attribution
+    would be wrong.
+    """
+    await store.upsert_source(CFG)
+    await _seed_profile(store, "old taste")
+    scorer = StubScorer()
+    pipeline = await _pipeline(store, StubDriver(_refs(1)), StubSummarizer(),
+                               scorer=scorer)
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+    new_version = await store.create_profile_version("new taste", "distilled", True)
+    await store.clear_scores_for_rescore()
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    cur = await store.db.execute(
+        "SELECT profile_version FROM scores ORDER BY id"
+    )
+    stamps = [r["profile_version"] for r in await cur.fetchall()]
+    assert stamps == ["profile-v1", new_version]
+
+
+async def test_the_body_and_the_version_scored_against_always_agree(
+    store: StateStore,
+) -> None:
+    """They travel as one value, so the stamp always resolves to what was sent."""
+    await store.upsert_source(CFG)
+    await _seed_profile(store, "old taste")
+    scorer = StubScorer()
+    pipeline = await _pipeline(store, StubDriver(_refs(2)), StubSummarizer(),
+                               scorer=scorer)
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+    await store.create_profile_version("new taste", "distilled", True)
+    await store.clear_scores_for_rescore()
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert len(scorer.profiles) == 4
+    for profile in scorer.profiles:
+        assert profile.body == await store.profile_body(profile.version)
+
+
+async def test_the_profile_is_read_once_per_run_not_once_per_article(
+    store: StateStore,
+) -> None:
+    """Scoring is a batch, and the profile is a per-batch read.
+
+    A per-article lookup would be correct and wasteful; the cheapest place to
+    notice it regressing is here, not in a profiler.
+    """
+    await store.upsert_source(CFG)
+    await _seed_profile(store)
+    reads = 0
+    real = store.latest_profile
+
+    async def counting_latest_profile():
+        nonlocal reads
+        reads += 1
+        return await real()
+
+    store.latest_profile = counting_latest_profile  # type: ignore[method-assign]
+    pipeline = await _pipeline(store, StubDriver(_refs(5)), StubSummarizer(),
+                               scorer=StubScorer())
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert reads == 1, "the profile is read per run, not per article"
+
+
+async def test_a_profile_read_is_skipped_entirely_without_a_scorer(
+    store: StateStore,
+) -> None:
+    """No scorer, no scoring path, nothing to read a profile for."""
+    await store.upsert_source(CFG)
+    await _seed_profile(store)
+    reads = 0
+    real = store.latest_profile
+
+    async def counting_latest_profile():
+        nonlocal reads
+        reads += 1
+        return await real()
+
+    store.latest_profile = counting_latest_profile  # type: ignore[method-assign]
+    pipeline = await _pipeline(store, StubDriver(_refs(2)), StubSummarizer())
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert reads == 0
+
+
+async def test_scoring_is_skipped_when_no_profile_is_live(store: StateStore) -> None:
+    """A wired scorer is not enough: with no profile there is nothing to judge by.
+
+    Degrades exactly like ``scorer=None`` — the article stays readable and
+    unscored, and stays queued, so it is scored once a profile is approved.
+    """
+    await store.upsert_source(CFG)
+    scorer = StubScorer()
+    pipeline = await _pipeline(store, StubDriver(_refs(1)), StubSummarizer(),
+                               scorer=scorer)
+
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert scorer.calls == 0
+    assert (await store.feed_items())[0]["score"] is None
+
+    await _seed_profile(store)
+    await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert scorer.calls == 1, "the unscored article was still pending"

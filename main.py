@@ -321,13 +321,14 @@ async def _build_components(
         logger.error("main: scoring disabled — %s", "; ".join(missing))
         scorer = None
     else:
-        profile_version, profile_body = profile
-        scorer = ClaudeScorer(
-            client,
-            model=settings.SCORE_MODEL,
-            profile_body=profile_body,
-            profile_version=profile_version,
-        )
+        # The profile read above gates scoring; it is deliberately not handed
+        # to the scorer. The reader can approve a distilled profile at any time
+        # and the live one changes underneath this process, so a scorer built
+        # around the boot profile would keep judging against it — and keep
+        # stamping its version — until a restart. The pipeline reads the live
+        # profile once per run instead, and this branch only decides whether
+        # there is a scoring path at all.
+        scorer = ClaudeScorer(client, model=settings.SCORE_MODEL)
 
     # WebSocket manager — subscribes itself to the bus, so anything published
     # from here on reaches every connected browser.

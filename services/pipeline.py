@@ -26,7 +26,7 @@ from services.extraction import (
     extract_text,
     unusable_reason,
 )
-from services.scorer import Scorer, ScoringError
+from services.scorer import Profile, Scorer, ScoringError
 from services.sources.base import PollState
 from services.sources.registry import SourceRegistry
 from services.summarizer import Summarizer
@@ -152,9 +152,18 @@ class Pipeline:
             )
         )
 
+        # Read once, here, and carried through the batch below. The live
+        # profile is a moving target — the reader approves a distillation and
+        # the newest approved row changes — so it cannot be captured at
+        # construction, which is what left a running process scoring against
+        # the profile it booted with. A poll is the natural unit: one read per
+        # run rather than one per article, and every score in the run judged by
+        # the same profile, which is what makes a batch comparable to itself.
+        # A profile approved mid-run therefore takes effect on the next poll.
+        profile = await self._current_profile()
         failures = 0
         for article_id in to_process:
-            ok = await self._advance(article_id, source, result.refs, now)
+            ok = await self._advance(article_id, source, result.refs, now, profile)
             if not ok:
                 failures += 1
 
@@ -188,12 +197,24 @@ class Pipeline:
         )
         return article_id
 
+    async def _current_profile(self) -> Profile | None:
+        """The live taste profile, or ``None`` if scoring cannot run.
+
+        Skipped entirely without a scorer: there is no scoring path to feed, so
+        the query would be a read taken for nobody.
+        """
+
+        if self._scorer is None:
+            return None
+        return Profile.from_state(await self._store.latest_profile())
+
     async def _advance(
         self,
         article_id: int,
         source: SourceConfig,
         refs: list[ArticleRef],
         now: datetime,
+        profile: Profile | None,
     ) -> bool:
         """Run extract, summarize, then score for one article.
 
@@ -230,9 +251,16 @@ class Pipeline:
                 return False
             row = await self._store.get_article_row(article_id)
 
-        if self._scorer is not None and row["scored_at"] is None:
+        # A missing profile degrades exactly like a missing scorer: nothing to
+        # judge against is nothing to score with. `scored_at` stays NULL, so the
+        # article is picked up by the first poll after a profile is approved.
+        if (
+            self._scorer is not None
+            and profile is not None
+            and row["scored_at"] is None
+        ):
             try:
-                await self._score(article_id, row, now)
+                await self._score(article_id, row, now, profile)
             except Exception as exc:
                 # Deliberately NOT a poll failure. The poll's failure tally
                 # drives source-level error backoff and eventually
@@ -331,7 +359,9 @@ class Pipeline:
             },
         )
 
-    async def _score(self, article_id: int, row, now: datetime) -> None:
+    async def _score(
+        self, article_id: int, row, now: datetime, profile: Profile
+    ) -> None:
         """Score the stored summary — never the article text.
 
         The summary is read back rather than carried from :meth:`_summarize`,
@@ -346,7 +376,7 @@ class Pipeline:
             # checkpoint, not something a retry can heal on its own.
             raise ScoringError(f"article {article_id} has no stored summary")
 
-        score = await self._scorer.score(_article_from_row(row), summary)
+        score = await self._scorer.score(_article_from_row(row), summary, profile)
         await self._store.save_score(article_id, score, scored_at=now)
 
         await self._publish(
