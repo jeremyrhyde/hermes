@@ -244,6 +244,8 @@ def test_threshold_outside_5_200_is_rejected(client: TestClient, value: int) -> 
 # Beyond the mandated set: the failure paths the plan asked to be decided.
 # ---------------------------------------------------------------------------
 
+from datetime import timedelta  # noqa: E402
+
 from services.profile import DISTILL_VERSION, DistillationError  # noqa: E402
 
 
@@ -285,6 +287,57 @@ async def test_approving_a_blank_edit_is_rejected(
     assert client.get("/profile/").json()["body"] == "live"
     # Still reviewable: a rejected edit must not consume the proposal.
     assert client.get("/profile/review").json()["state"] == "pending"
+
+
+async def test_a_pending_proposal_outranks_a_ready_count(
+    store: StateStore, client: TestClient
+) -> None:
+    """Pending wins over ready — the one ordering the other tests cannot see.
+
+    Everywhere else a proposal exists, generating it has just reset the counter,
+    so `count >= threshold` is false and either branch order gives `pending`.
+    Rate past the threshold again and the two disagree: the reader must be shown
+    the proposal awaiting them, not invited to generate a second one against the
+    same base.
+    """
+    await store.set_preference("distill_threshold", "5")
+    await _rate(store, 5)
+    client.post("/profile/review")
+
+    # Re-rated with a timestamp *after* the proposal on purpose. `_rate` stamps
+    # every rating with a fixed NOW that already predates the row the proposal
+    # just wrote, and the counter compares created_at — so rating again through
+    # the fixture would leave the count at zero and prove nothing.
+    later = datetime.now(timezone.utc) + timedelta(minutes=1)
+    for row in await store.rated_articles():
+        await store.rate_article(row["article_id"], -1, later)
+
+    body = client.get("/profile/review").json()
+
+    assert body["state"] == "pending"
+    assert body["count"] == 5, "the true count, not one suppressed by the state"
+
+
+def test_a_stated_profile_reports_its_kind(client: TestClient) -> None:
+    version = client.put("/profile/", json={"body": "mine"}).json()["version"]
+
+    body = client.get("/profile/").json()
+    assert body["version"] == version
+    assert body["kind"] == "stated"
+
+
+async def test_an_approved_proposal_reports_its_kind(
+    store: StateStore, client: TestClient
+) -> None:
+    """Editing on approval does not make it the reader's own writing."""
+    await store.set_preference("distill_threshold", "5")
+    await _rate(store, 5)
+    version = client.post("/profile/review").json()["version"]
+
+    client.post(f"/profile/review/{version}/approve",
+                json={"body": "my own wording", "rescore": False})
+
+    assert client.get("/profile/").json()["kind"] == "distilled"
 
 
 async def test_generating_without_a_distiller_is_unavailable(

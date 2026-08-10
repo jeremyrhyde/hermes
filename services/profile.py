@@ -157,6 +157,15 @@ class ProfileDistiller:
                     {"role": "user", "content": self._build_context(current, rated)}
                 ],
             )
+        except DistillationError:
+            # `_build_context` is evaluated as an argument to the call, so it
+            # runs *inside* this `try` and `_render`'s rejection of an
+            # out-of-range rating would otherwise be re-wrapped below as
+            # "Anthropic API call failed". The status the caller picks would
+            # still be right, but the message reaches the reader's review panel,
+            # and blaming the network for a corrupt rating sends them looking in
+            # the wrong place.
+            raise
         except Exception as exc:
             raise DistillationError(f"Anthropic API call failed: {exc}") from exc
 

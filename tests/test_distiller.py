@@ -146,6 +146,24 @@ async def test_an_unexpected_rating_is_rejected(bad) -> None:
         await _distiller(_client({"profile": "body"})).propose("old", rated)
 
 
+async def test_a_rating_error_is_not_reported_as_an_api_failure() -> None:
+    """The message reaches the reader's review panel, so it must not misdirect.
+
+    `_build_context` is evaluated as an argument to the API call, so it runs
+    inside the same `try`, and the broad handler would re-wrap a corrupt rating
+    as "Anthropic API call failed" — sending the reader to look at the network
+    for a problem in their own data.
+    """
+    rated = [{"headline": "h", "bullets": [], "categories": [],
+              "score": 50, "rating": 0}]
+
+    with pytest.raises(DistillationError) as excinfo:
+        await _distiller(_client({"profile": "body"})).propose("old", rated)
+
+    assert "unexpected rating" in str(excinfo.value)
+    assert "API call failed" not in str(excinfo.value)
+
+
 async def test_a_missing_headline_is_not_sent_as_the_string_none() -> None:
     client = _client({"profile": "body"})
     await _distiller(client).propose(

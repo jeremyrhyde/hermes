@@ -50,7 +50,13 @@ from schemas.article import FeedItem, InteractionIn, RatingIn
 from schemas.preferences import PreferenceIn
 from schemas.profile import ApprovalIn, ProfileIn
 from schemas.source import SourceConfig, SourceRef
-from services.profile import DISTILL_VERSION, DistillationError
+# The one import from `services` in this layer, and deliberate: two constants
+# with no behavior, no cycle (`services.profile` imports nothing from `core`),
+# and the alternative is restating the distillation prompt's version here where
+# it would drift. Not a precedent — the API talks to services through
+# `app.state`, and a second import wanting to appear here is a sign the wiring
+# belongs in `main.py` instead.
+from services.profile import DISTILL_VERSION, DistillationError, ProfileDistiller
 
 if TYPE_CHECKING:  # pragma: no cover
     from config import Settings
@@ -447,8 +453,8 @@ model has already seen the shape of.
 """
 
 
-def _distiller(request: Request) -> Any:
-    return request.app.state.distiller
+def _distiller(request: Request) -> "ProfileDistiller | None":
+    return request.app.state.distiller  # type: ignore[no-any-return]
 
 
 def _build_profile_router() -> APIRouter:
@@ -469,7 +475,11 @@ def _build_profile_router() -> APIRouter:
         if current is None:
             return {"version": None, "body": "", "kind": None}
         version, body = current
-        return {"version": version, "body": body, "kind": await store.profile_kind(version)}
+        return {
+            "version": version,
+            "body": body,
+            "kind": await store.profile_kind(version),
+        }
 
     @router.put("/")
     async def put_profile(payload: ProfileIn, request: Request) -> dict[str, str]:
@@ -575,6 +585,33 @@ def _build_profile_router() -> APIRouter:
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"could not distill a profile: {exc}",
             ) from exc
+
+        # Checked again, because the guard above is a check-then-write whose
+        # window is the entire model call — seconds wide, and every `await` in
+        # it yields the loop. Two tabs, or one double-click, both pass the first
+        # check and both write, leaving two pending rows. `pending_proposal()`
+        # returns only the newest, so resolving the visible one leaves the older
+        # still pending: the panel reappears with a stale proposal that the
+        # rating count can never grow past, and the reader paid for two calls.
+        #
+        # This narrows a seconds-wide hole to the microseconds between here and
+        # the insert; it does not close it. Discarding a finished proposal is
+        # the price of losing the race, not of the fix. Making it structural
+        # would take a UNIQUE partial index over pending rows
+        # (`WHERE approved_at IS NULL AND rejected_at IS NULL`), which is a
+        # migration and a caught IntegrityError — worth it only if this ever has
+        # to be airtight. Approval needs none of this: `resolve_proposal` is a
+        # single atomic UPDATE ... WHERE ... RETURNING, so the loser of a
+        # double-approve gets False and a 409 by construction.
+        if await store.pending_proposal() is not None:
+            logger.warning(
+                "api: discarding a distilled proposal; another request wrote "
+                "one while this one was waiting on the model"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="a proposal is already awaiting review",
+            )
 
         version = await store.create_profile_version(
             body, "distilled", False, distill_version=DISTILL_VERSION
@@ -861,7 +898,7 @@ def create_app(
     category_vocabulary: list[str] | None = None,
     category_filters: list[str] | None = None,
     mount_static: bool = True,
-    distiller: Any = None,
+    distiller: "ProfileDistiller | None" = None,
 ) -> FastAPI:
     """Build and wire a :class:`FastAPI` instance.
 

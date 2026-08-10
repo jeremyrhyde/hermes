@@ -763,10 +763,10 @@ class StateStore:
 
         ``'stated'`` or ``'distilled'``, and ``None`` if the version was never
         written. Its own accessor rather than a third element on
-        :meth:`latest_profile`, whose two-tuple is compared by equality
-        throughout the suite and by ``main.py``'s scorer wiring — a widened
-        return would be a mechanical edit to every one of those sites in
-        exchange for a field the scorer never reads.
+        :meth:`latest_profile`: seven assertions across the suite compare that
+        two-tuple whole, and ``main.py``'s scorer wiring unpacks it, so widening
+        it is an eight-site edit that puts a field on the scoring path for the
+        sake of one Settings-panel read. The scorer never looks at ``kind``.
 
         The API needs it because a reader looking at their profile in Settings
         is owed the difference between text they wrote and text they approved.
