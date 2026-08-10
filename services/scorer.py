@@ -94,8 +94,11 @@ class Profile:
     phase 4's before/after comparison is keyed on, so a wrong stamp is worse
     than a missing score: the numbers look right and the attribution is wrong.
 
-    Built only by :meth:`from_state`, off a single row, so the pair cannot be
-    assembled from two reads taken at different times.
+    Built from :meth:`from_state` in production, off a single row, so the pair
+    is never assembled from two reads taken at different times. A convention,
+    not a guarantee: this is a plain frozen dataclass with a public constructor,
+    and tests build one directly. Drift here is unconstructed, not
+    unrepresentable.
     """
 
     version: str
@@ -107,9 +110,16 @@ class Profile:
 
         ``None`` in means no approved profile exists, which is not an error:
         scoring is skipped and the article stays readable and unscored.
+
+        Unpacked rather than indexed: this is the seam where an outside shape
+        becomes an internal type, so a wrong-arity tuple should raise a legible
+        ``ValueError`` here rather than an ``IndexError`` from inside the call.
         """
 
-        return None if pair is None else cls(version=pair[0], body=pair[1])
+        if pair is None:
+            return None
+        version, body = pair
+        return cls(version=version, body=body)
 
 
 class Scorer(Protocol):

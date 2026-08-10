@@ -630,6 +630,12 @@ def _build_profile_router() -> APIRouter:
         scorer judges every article against. The state layer deliberately does
         not guard this — it only distinguishes "no edit" from "an edit" — so the
         guard belongs here, next to the same rejection on ``PUT /profile/``.
+
+        Approval takes effect on the **next poll of each source**, not at the
+        moment this returns: :meth:`services.pipeline.Pipeline.process_source`
+        reads the live profile once per run, so scores already on screen do not
+        move until their source is polled again. ``rescore`` only clears the
+        checkpoints that make those articles eligible; it schedules nothing.
         """
 
         if payload.body is not None and not payload.body.strip():
