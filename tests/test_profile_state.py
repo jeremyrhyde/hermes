@@ -9,8 +9,18 @@ from schemas.article import ArticleRef, Summary
 from schemas.scoring import Score
 from schemas.source import SourceConfig
 
-NOW = datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc)
 LATER = NOW + timedelta(hours=1)
+"""Anchored to the real clock, not a fixed date, and only these two constants.
+
+The counter tests interleave rating timestamps the test supplies with proposal
+timestamps ``create_profile_version`` stamps itself from ``utcnow()``, so their
+order has to hold at run time: a rating "before the proposal" must really be
+older than the row the store writes a moment later. A fixed past date makes
+that arrangement true for one hour of one day and false forever after — the
+same failure mode as the pinned seed clock elsewhere in the suite. Nothing here
+depends on the absolute date, only on ``NOW < proposal < LATER``.
+"""
 CFG = SourceConfig(id="acx", type="substack", name="ACX", feed_url="https://x/feed")
 
 
@@ -183,3 +193,128 @@ async def test_resolving_twice_reports_false(store: StateStore) -> None:
 
 async def test_resolving_an_unknown_version_reports_false(store: StateStore) -> None:
     assert await store.resolve_proposal("profile-v99", approved=True) is False
+
+
+async def test_counter_counts_every_rating_when_no_proposal_exists(
+    store: StateStore,
+) -> None:
+    await store.upsert_source(CFG)
+    a, b = await _article(store, "a"), await _article(store, "b")
+    await store.rate_article(a, 1, NOW)
+    await store.rate_article(b, -1, NOW)
+
+    assert await store.ratings_since_last_review() == 2
+
+
+async def test_counter_resets_after_a_proposal(store: StateStore) -> None:
+    await store.upsert_source(CFG)
+    a = await _article(store, "a")
+    await store.rate_article(a, 1, NOW)
+    await store.create_profile_version("proposed", "distilled", False)
+
+    assert await store.ratings_since_last_review() == 0
+
+
+async def test_counter_resets_after_a_rejection_too(store: StateStore) -> None:
+    """The reset point is the proposal, not its outcome."""
+    await store.upsert_source(CFG)
+    a, b = await _article(store, "a"), await _article(store, "b")
+    await store.rate_article(a, 1, NOW)
+    v = await store.create_profile_version("proposed", "distilled", False)
+    await store.resolve_proposal(v, approved=False)
+    await store.rate_article(b, 1, LATER)
+
+    assert await store.ratings_since_last_review() == 1
+
+
+async def test_changing_your_mind_counts_twice(store: StateStore) -> None:
+    """Append-only: a reversal is a strong signal, not a correction."""
+    await store.upsert_source(CFG)
+    a = await _article(store, "a")
+    await store.rate_article(a, 1, NOW)
+    await store.rate_article(a, -1, LATER)
+
+    assert await store.ratings_since_last_review() == 2
+
+
+async def test_clearing_a_rating_lowers_the_count(store: StateStore) -> None:
+    """Section 2.6: the counter is not monotonic, and that is correct.
+
+    Clearing deletes the rows, so a cleared rating leaves no trace — it carries
+    no opinion for the distiller to read.
+    """
+    await store.upsert_source(CFG)
+    a = await _article(store, "a")
+    await store.rate_article(a, 1, NOW)
+    assert await store.ratings_since_last_review() == 1
+
+    await store.clear_rating(a)
+
+    assert await store.ratings_since_last_review() == 0
+
+
+async def test_rated_articles_carry_what_the_reader_saw(store: StateStore) -> None:
+    await store.upsert_source(CFG)
+    a = await _article(store, "a")
+    await store.save_score(
+        a, Score(value=80, rationale="r", rubric_version="rubric-v1",
+                 profile_version="profile-v1"), NOW)
+    await store.rate_article(a, 1, NOW)
+
+    rated = await store.rated_articles()
+
+    assert len(rated) == 1
+    assert rated[0]["headline"] == "Ha"
+    assert rated[0]["rating"] == 1
+    assert rated[0]["score"] == 80
+    assert rated[0]["categories"] == ["ai"]
+
+
+async def test_unrated_articles_are_absent(store: StateStore) -> None:
+    await store.upsert_source(CFG)
+    await _article(store, "a")
+
+    assert await store.rated_articles() == []
+
+
+async def test_a_cleared_rating_removes_the_article(store: StateStore) -> None:
+    await store.upsert_source(CFG)
+    a = await _article(store, "a")
+    await store.rate_article(a, 1, NOW)
+    await store.clear_rating(a)
+
+    assert await store.rated_articles() == []
+
+
+async def test_rescore_clears_the_checkpoint(store: StateStore) -> None:
+    await store.upsert_source(CFG)
+    a = await _article(store, "a")
+    await store.save_score(
+        a, Score(value=80, rationale="r", rubric_version="rubric-v1",
+                 profile_version="profile-v1"), NOW)
+
+    assert await store.clear_scores_for_rescore() == 1
+
+    assert a in await store.articles_pending("score")
+
+
+async def test_rescore_keeps_the_old_scores(store: StateStore) -> None:
+    """They are the before-half of the comparison the parent spec asks for."""
+    await store.upsert_source(CFG)
+    a = await _article(store, "a")
+    await store.save_score(
+        a, Score(value=80, rationale="r", rubric_version="rubric-v1",
+                 profile_version="profile-v1"), NOW)
+
+    await store.clear_scores_for_rescore()
+
+    cur = await store.db.execute("SELECT COUNT(*) c FROM scores")
+    assert (await cur.fetchone())["c"] == 1
+
+
+async def test_rescore_skips_unusable_articles(store: StateStore) -> None:
+    await store.upsert_source(CFG)
+    a = await _article(store, "a")
+    await store.mark_unusable(a, "paywalled", NOW)
+
+    assert await store.clear_scores_for_rescore() == 0

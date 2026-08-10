@@ -855,6 +855,122 @@ class StateStore:
             (body, now if approved else None, None if approved else now, version),
         )
 
+    # ------------------------------------------------------------------
+    # Review cadence and re-scoring
+    # ------------------------------------------------------------------
+    async def ratings_since_last_review(self) -> int:
+        """Ratings recorded since the most recent proposal (spec 2.6).
+
+        "Proposal" means the most recent ``kind = 'distilled'`` row, whatever
+        became of it: approving and rejecting are both reviews of the ratings
+        that prompted it, so both reset the count. A ``'stated'`` row does not,
+        because a hand-edit of the profile is the reader rewriting their taste,
+        not reviewing accumulated evidence — resetting there would silently
+        discard their progress toward the next distillation every time they
+        fixed a typo. With no proposal on file every rating counts.
+
+        The number can go **down**, and callers must not present it as a
+        ratchet. ``ratings`` is append-only, so changing your mind counts twice
+        — a reversal is signal, not a correction — but :meth:`clear_rating`
+        deletes rows, so a rated-then-cleared article leaves no trace. That is
+        right: a cleared rating carries no opinion for the distiller to read.
+
+        The empty-string floor is what makes "no proposal" count everything;
+        every ISO-8601 timestamp sorts above it.
+        """
+
+        cur = await self.db.execute(
+            """
+            SELECT COUNT(*) AS n FROM ratings
+             WHERE created_at > COALESCE(
+                       (SELECT MAX(created_at) FROM profile_versions
+                         WHERE kind = 'distilled'), '')
+            """
+        )
+        return (await cur.fetchone())["n"]
+
+    async def rated_articles(self) -> list[dict]:
+        """Every rated article with what the reader saw when they rated it.
+
+        The distiller's corpus: the headline, bullets and categories that were
+        on the card, the score the current profile gave it, and the verdict.
+        Newest rating first, so a truncating caller keeps the freshest signal.
+
+        Deliberately its own projection rather than ``_FEED_ROW_SELECT``. These
+        rows feed a prompt, not the ``FeedItem`` DTO, so they carry exactly the
+        keys the contract promises and none of the card's presentation fields.
+        The parsing is shared, though — ``bullets`` and ``categories`` come back
+        already decoded, as :meth:`feed_items` returns them, so no caller has to
+        know that one is JSON in a column and the other a second table.
+
+        Latest-wins on the rating, matching :meth:`rate_article`, with the same
+        ``id`` tie-break :data:`_FEED_ROW_SELECT` explains. Clearing a rating
+        deletes its rows, so the article drops out entirely.
+        """
+
+        import json
+
+        cur = await self.db.execute(
+            """
+            SELECT a.id       AS article_id,
+                   s.headline AS headline,
+                   s.bullets_json AS bullets_json,
+                   (SELECT value FROM ratings r
+                     WHERE r.article_id = a.id
+                     ORDER BY r.created_at DESC, r.id DESC LIMIT 1) AS rating,
+                   (SELECT MAX(r.created_at) FROM ratings r
+                     WHERE r.article_id = a.id) AS rated_at,
+                   (SELECT score FROM scores sc
+                     WHERE sc.article_id = a.id
+                     ORDER BY sc.created_at DESC, sc.id DESC LIMIT 1) AS score
+              FROM articles a
+              JOIN summaries s ON s.article_id = a.id
+             WHERE a.summarized_at IS NOT NULL
+               AND a.unusable_at IS NULL
+               AND EXISTS (SELECT 1 FROM ratings r WHERE r.article_id = a.id)
+             ORDER BY rated_at DESC, a.id DESC
+            """
+        )
+        rows = [dict(row) for row in await cur.fetchall()]
+        by_article = await self._categories_for(row["article_id"] for row in rows)
+        for row in rows:
+            row["bullets"] = json.loads(row.pop("bullets_json"))
+            row["categories"] = by_article.get(row["article_id"], [])
+            row.pop("rated_at")
+        return rows
+
+    async def clear_scores_for_rescore(self) -> int:
+        """Queue every scorable article for re-scoring. Returns how many.
+
+        Clears the ``scored_at`` checkpoint, which is exactly what
+        :meth:`articles_pending` selects on, so the existing scorer picks the
+        work up on its next pass with nothing new to teach it.
+
+        It does **not** delete from ``scores``. Those rows are the before-half
+        of the old-profile/new-profile comparison the reader is shown, and
+        ``save_score`` appends rather than overwrites precisely so both survive.
+
+        All scorable articles, not just unread ones. A partial re-score leaves
+        the feed ranking one profile's scores against another's with nothing on
+        screen to say so. The preconditions mirror the ``score`` entry in
+        :data:`_PENDING_STAGES` — summarized, not unusable — and the count is of
+        rows actually cleared, so an article that was already pending is not
+        reported as newly queued.
+        """
+
+        cur = await self.db.execute(
+            """
+            UPDATE articles SET scored_at = NULL
+             WHERE scored_at IS NOT NULL
+               AND summarized_at IS NOT NULL
+               AND unusable_at IS NULL
+            RETURNING id
+            """
+        )
+        queued = len(await cur.fetchall())
+        await self.db.commit()
+        return queued
+
     async def _article_exists(self, article_id: int) -> bool:
         cur = await self.db.execute(
             "SELECT 1 FROM articles WHERE id = ?", (article_id,)
