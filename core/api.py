@@ -44,11 +44,11 @@ from fastapi import (
     status,
 )
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict
 
 from core.state import parse_iso
 from schemas.article import FeedItem, InteractionIn, RatingIn
 from schemas.preferences import PreferenceIn
+from schemas.profile import ApprovalIn, ProfileIn
 from schemas.source import SourceConfig, SourceRef
 from services.profile import DISTILL_VERSION, DistillationError
 
@@ -446,95 +446,9 @@ few hundred rated articles would bloat every proposal call for evidence the
 model has already seen the shape of.
 """
 
-_RESCORE_COUNT_CAP = 100_000
-"""Upper bound on the re-score queue depth reported to the reader.
-
-``articles_pending`` takes a ``LIMIT`` because the poller batches through it;
-here it is being counted, not consumed, so the cap only has to sit above any
-corpus this reader will ever accumulate.
-"""
-
-
-class ProfileIn(BaseModel):
-    """Request body for ``PUT /profile/``."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    body: str
-
-
-class ApprovalIn(BaseModel):
-    """Request body for ``POST /profile/review/{version}/approve``.
-
-    ``body`` carries the reader's edit, and its absence is not the same as an
-    empty string: ``None`` means "approve what was proposed", while ``""`` is a
-    real edit that would wipe the profile. Editing is not a separate route on
-    purpose — a saved edit that was never approved would be a body nobody
-    agreed to, sitting one query away from being live.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    body: str | None = None
-    rescore: bool = False
-
 
 def _distiller(request: Request) -> Any:
     return request.app.state.distiller
-
-
-async def _profile_kind(store: "StateStore", version: str) -> str | None:
-    """The ``kind`` of one profile version — ``'stated'`` or ``'distilled'``.
-
-    Read here rather than through :class:`~core.state.StateStore` because no
-    accessor exposes it yet and the store is out of scope for this change. Fold
-    it into ``latest_profile`` the next time that method is touched; this is the
-    only raw query in the API layer and should not acquire company.
-    """
-
-    cur = await store.db.execute(
-        "SELECT kind FROM profile_versions WHERE version = ?", (version,)
-    )
-    row = await cur.fetchone()
-    return row["kind"] if row else None
-
-
-async def _distill_threshold(store: "StateStore") -> int:
-    """How many ratings must accumulate before a proposal may be generated.
-
-    Deliberately *not* read through :func:`_knob`. That function substitutes the
-    default for any stored value outside the knob's range, which is right for
-    the cutoff — an out-of-range cutoff silently empties the feed — but wrong
-    here: the 5-200 range guards what the reader may type into the UI, and a
-    value written directly to the table is still the cadence this loop should
-    run at. Substituting 20 for it would make the review panel report a
-    threshold it was not using.
-
-    A non-numeric or non-positive value is a different matter: there is no
-    cadence to honor, so the default stands and the fallback is logged the way
-    :func:`_knob` logs its own.
-    """
-
-    default = _PREFERENCES[PREF_DISTILL_THRESHOLD].default
-    raw = await store.get_preference(PREF_DISTILL_THRESHOLD)
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        logger.warning(
-            "api: preference %s holds a non-numeric value %r; using %d",
-            PREF_DISTILL_THRESHOLD, raw, default,
-        )
-        return default
-    if value < 1:
-        logger.warning(
-            "api: preference %s holds %d, which would propose from no evidence; "
-            "using %d",
-            PREF_DISTILL_THRESHOLD, value, default,
-        )
-        return default
-    return value
 
 
 def _build_profile_router() -> APIRouter:
@@ -555,7 +469,7 @@ def _build_profile_router() -> APIRouter:
         if current is None:
             return {"version": None, "body": "", "kind": None}
         version, body = current
-        return {"version": version, "body": body, "kind": await _profile_kind(store, version)}
+        return {"version": version, "body": body, "kind": await store.profile_kind(version)}
 
     @router.put("/")
     async def put_profile(payload: ProfileIn, request: Request) -> dict[str, str]:
@@ -594,7 +508,7 @@ def _build_profile_router() -> APIRouter:
 
         store = _store(request)
         count = await store.ratings_since_last_review()
-        threshold = await _distill_threshold(store)
+        threshold = await _knob(store, PREF_DISTILL_THRESHOLD)
         proposal = await store.pending_proposal()
 
         if proposal is not None:
@@ -639,7 +553,7 @@ def _build_profile_router() -> APIRouter:
             )
 
         count = await store.ratings_since_last_review()
-        threshold = await _distill_threshold(store)
+        threshold = await _knob(store, PREF_DISTILL_THRESHOLD)
         if count < threshold:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -691,18 +605,11 @@ def _build_profile_router() -> APIRouter:
         if not await store.resolve_proposal(version, True, payload.body):
             raise _unresolvable(version)
 
-        rescored = 0
-        if payload.rescore:
-            # `clear_scores_for_rescore` returns how many checkpoints it
-            # cleared, which undercounts the corpus: an article summarized but
-            # never scored has no checkpoint to clear and is still something the
-            # new profile will judge. The queue depth after the clear is what
-            # the reader is promised, because it is what will actually be
-            # re-scored.
-            await store.clear_scores_for_rescore()
-            rescored = len(
-                await store.articles_pending("score", limit=_RESCORE_COUNT_CAP)
-            )
+        # How many articles were re-queued, which is how many carried a score
+        # under the outgoing profile. Not the pending-score queue depth: that
+        # would also count articles being scored for the first time, and
+        # "rescored" would overstate what the new profile actually revisits.
+        rescored = await store.clear_scores_for_rescore() if payload.rescore else 0
         return {"version": version, "rescored": rescored}
 
     @router.post("/review/{version}/reject", status_code=status.HTTP_204_NO_CONTENT)

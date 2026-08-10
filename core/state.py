@@ -758,6 +758,26 @@ class StateStore:
         row = await cur.fetchone()
         return row["body"] if row else None
 
+    async def profile_kind(self, version: str) -> str | None:
+        """Whether *version* was written by the reader or by the distiller.
+
+        ``'stated'`` or ``'distilled'``, and ``None`` if the version was never
+        written. Its own accessor rather than a third element on
+        :meth:`latest_profile`, whose two-tuple is compared by equality
+        throughout the suite and by ``main.py``'s scorer wiring — a widened
+        return would be a mechanical edit to every one of those sites in
+        exchange for a field the scorer never reads.
+
+        The API needs it because a reader looking at their profile in Settings
+        is owed the difference between text they wrote and text they approved.
+        """
+
+        cur = await self.db.execute(
+            "SELECT kind FROM profile_versions WHERE version = ?", (version,)
+        )
+        row = await cur.fetchone()
+        return row["kind"] if row else None
+
     async def seed_profile(self, version: str, body: str) -> None:
         """Insert only if absent, so the file never clobbers an edited profile.
 
