@@ -21,6 +21,21 @@
 -- finding about the distiller, which a deleted row would hide.
 --
 -- Row states: pending = both timestamps NULL; approved = approved_at set;
--- rejected = rejected_at set. No code path sets both.
+-- rejected = rejected_at set.
+--
+-- "Never both" is a code-layer contract, not a schema guarantee. It holds
+-- because the only writer resolves a proposal by matching on rows where both
+-- are still NULL, so a resolved row can never be resolved again. Nothing in
+-- the database enforces it.
+--
+-- A guard IS available if that ever stops feeling sufficient — contrary to the
+-- obvious reading, SQLite accepts a column-level CHECK inside ADD COLUMN, and
+-- its expression may reference other columns:
+--
+--   ALTER TABLE profile_versions ADD COLUMN rejected_at TEXT
+--       CHECK (approved_at IS NULL OR rejected_at IS NULL);
+--
+-- Only a *table*-level CHECK requires the 12-step rebuild. It is omitted here
+-- because the column alone was the agreed scope, not because it was impossible.
 
 ALTER TABLE profile_versions ADD COLUMN rejected_at TEXT;

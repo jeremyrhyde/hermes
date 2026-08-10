@@ -299,7 +299,7 @@ async def test_migration_005_is_not_rerun_on_restart(tmp_path) -> None:
 
 
 async def test_rejected_at_defaults_to_null(tmp_path) -> None:
-    """An existing profile is neither approved-by-this-migration nor rejected."""
+    """A newly written profile is neither approved nor rejected."""
     async with aiosqlite.connect(tmp_path / "t.db") as db:
         await apply_migrations(db, MIGRATIONS_DIR)
         await db.execute(
