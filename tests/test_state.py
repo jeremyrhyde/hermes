@@ -11,7 +11,7 @@ async def test_start_applies_migrations(tmp_path) -> None:
     try:
         cur = await s.db.execute("PRAGMA user_version")
         (version,) = await cur.fetchone()
-        assert version == 4
+        assert version == 5
     finally:
         await s.close()
 

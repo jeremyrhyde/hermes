@@ -1,0 +1,26 @@
+-- 005_rejected.sql — profile proposals the reader declined.
+--
+-- Migrations are forward-only and must never be edited after running
+-- anywhere. Like 003 and 004 this uses ALTER TABLE ADD COLUMN, which SQLite
+-- offers no IF NOT EXISTS for, so a regression in the runner's version-skip
+-- filter fails loudly on the next restart instead of passing silently.
+--
+-- Do NOT set PRAGMA user_version here. The runner derives the version from
+-- the NNN_ filename prefix and sets it itself; a pragma in the file would be
+-- a second source of truth for the schema version.
+--
+-- A distilled profile is written with approved_at NULL and stays out of the
+-- live profile until the reader reviews it (latest_profile() already filters
+-- on approved_at IS NOT NULL). rejected_at is the missing third state:
+-- reviewed and declined.
+--
+-- It is a column rather than a DELETE because the row is worth keeping. It
+-- records what was proposed and refused, and its timestamp is where the
+-- rating counter resets from — ratings are counted since the most recent
+-- proposal, however that proposal resolved. Repeated rejections are also a
+-- finding about the distiller, which a deleted row would hide.
+--
+-- Row states: pending = both timestamps NULL; approved = approved_at set;
+-- rejected = rejected_at set. No code path sets both.
+
+ALTER TABLE profile_versions ADD COLUMN rejected_at TEXT;
