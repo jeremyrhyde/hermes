@@ -306,44 +306,67 @@ async def _build_components(
     )
 
     # Scoring needs both halves of the scoring function: the key to call the
-    # model, and a profile to judge against. Missing either disables it, and
-    # the entry says which — "scoring is off" without a reason is the kind of
-    # thing an operator rediscovers a week later from an empty score column.
-    if client is None or profile is None:
-        missing = []
-        if client is None:
-            missing.append("ANTHROPIC_API_KEY is not set")
-        if profile is None:
-            # Deliberately not "is absent". The profile is None for an absent
-            # file, an empty one, or an unreadable one, and the `profile` entry
-            # above already says which. Asserting "absent" here contradicts it
-            # for two of those three, and two /health rows disagreeing is worse
-            # than one saying less.
-            missing.append(f"no taste profile loaded from {settings.PROFILE_PATH}")
-        # What still runs depends on which half is missing. Without a key there
-        # is no summarizer either, so nothing is ingested at all — promising
-        # ingestion here would contradict the `summarizer` entry sitting beside
-        # it.
-        consequence = (
-            "Articles are still ingested and summarized; they stay unscored."
-            if client is not None
-            else "The poller is disabled too, so nothing is ingested."
-        )
+    # model, and a profile to judge against. Only the first half is a wiring
+    # decision. The profile read above is deliberately not handed to the scorer
+    # and no longer gates building one either: the reader can approve a
+    # distilled profile at any time, so the pipeline reads the live profile once
+    # per run and skips scoring while there is none. Withholding the scorer here
+    # would make that per-run check unreachable and turn "approve your first
+    # profile" into "approve it, then restart the server" — and the flow that
+    # hits it is this phase's own: boot with no profile.md, rate the summaries,
+    # approve the distillation. Nothing is scored before that point either way;
+    # the difference is whether anything is scored after it.
+    scorer = None if client is None else ClaudeScorer(client, model=settings.SCORE_MODEL)
+
+    # Whether scoring is *producing* scores is a separate question, and one
+    # /health still has to answer — "no scores" without a reason is the kind of
+    # thing an operator rediscovers a week later from an empty score column. Two
+    # reasons, and they are not the same state:
+    #
+    #   no key      — off, and staying off until the process is restarted with
+    #                 one. Without a key there is no summarizer either, so
+    #                 nothing is ingested at all; promising ingestion here would
+    #                 contradict the `summarizer` entry sitting beside it.
+    #   no profile  — wired and waiting. Reading "disabled" here would send an
+    #                 operator looking for a switch, when approving a first
+    #                 profile is the switch and it needs nothing else.
+    #
+    # This list is built once, at boot, and never revised, which the second
+    # entry has to own: the moment a profile is approved it is wrong, so it says
+    # so rather than being quietly stale. The first stays true for the life of
+    # the process, since the key is only read here.
+    if client is None:
         failures.append({
             "component": "scorer",
-            "error": f"scoring is disabled: {'; '.join(missing)}. {consequence}",
+            "error": (
+                "scoring is disabled: ANTHROPIC_API_KEY is not set. The poller "
+                "is disabled too, so nothing is ingested."
+            ),
         })
-        logger.error("main: scoring disabled — %s", "; ".join(missing))
-        scorer = None
-    else:
-        # The profile read above gates scoring; it is deliberately not handed
-        # to the scorer. The reader can approve a distilled profile at any time
-        # and the live one changes underneath this process, so a scorer built
-        # around the boot profile would keep judging against it — and keep
-        # stamping its version — until a restart. The pipeline reads the live
-        # profile once per run instead, and this branch only decides whether
-        # there is a scoring path at all.
-        scorer = ClaudeScorer(client, model=settings.SCORE_MODEL)
+        logger.error("main: scoring disabled — ANTHROPIC_API_KEY is not set")
+    elif profile is None:
+        # Deliberately not "profile.md is absent". The profile is None for an
+        # absent file, an empty one, or an unreadable one, and the `profile`
+        # entry above already says which. Asserting "absent" here contradicts it
+        # for two of those three, and two /health rows disagreeing is worse than
+        # one saying less. It is also not necessarily the file's fault at all:
+        # the reader may simply not have approved anything yet.
+        failures.append({
+            "component": "scorer",
+            "error": (
+                f"scoring is waiting for a taste profile: none is loaded from "
+                f"{settings.PROFILE_PATH} and none has been approved. Articles "
+                f"are still ingested and summarized; they stay unscored until "
+                f"there is a profile to judge them against. Approving one takes "
+                f"effect on the next poll — no restart — though this entry, "
+                f"written at boot, stays here until one."
+            ),
+        })
+        logger.warning(
+            "main: scoring is waiting for a taste profile — none loaded from "
+            "%s; scoring starts on the next poll after one is approved",
+            settings.PROFILE_PATH,
+        )
 
     # WebSocket manager — subscribes itself to the bus, so anything published
     # from here on reaches every connected browser.
