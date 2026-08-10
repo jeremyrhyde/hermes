@@ -66,8 +66,13 @@ class Settings(BaseSettings):
         DEFAULT_MAX_DISPLAYED: Seed value only, used to populate the
             ``preferences`` table on first run; the live knob is
             runtime-editable from the UI thereafter. Default ``50``.
+        DEFAULT_DISTILL_THRESHOLD: Seed value only, like the two above. How
+            many ratings accumulate before the reader is offered a fresh
+            profile proposal. Default ``20`` — enough ratings that a proposal
+            has something to generalize from, few enough that the loop closes
+            within a week of ordinary reading.
 
-    The two ``DEFAULT_`` values are mirrored by ``core.api._PREFERENCES``, which
+    The three ``DEFAULT_`` values are mirrored by ``core.api._PREFERENCES``, which
     supplies them when no row exists at all. Change one and change the other.
 
     Add domain settings (DB path, upstream URLs, credentials, poll intervals)
@@ -96,6 +101,7 @@ class Settings(BaseSettings):
 
     DEFAULT_SCORE_CUTOFF: int = 0
     DEFAULT_MAX_DISPLAYED: int = 50
+    DEFAULT_DISTILL_THRESHOLD: int = 20
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"

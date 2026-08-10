@@ -61,8 +61,14 @@ def test_api_defaults_mirror_the_settings_seeds() -> None:
     app disagreed with a seeded one.
     """
     from config import Settings
-    from core.api import PREF_MAX_DISPLAYED, PREF_SCORE_CUTOFF, _PREFERENCES
+    from core.api import (
+        PREF_DISTILL_THRESHOLD,
+        PREF_MAX_DISPLAYED,
+        PREF_SCORE_CUTOFF,
+        _PREFERENCES,
+    )
 
     settings = Settings()
     assert _PREFERENCES[PREF_SCORE_CUTOFF].default == settings.DEFAULT_SCORE_CUTOFF
     assert _PREFERENCES[PREF_MAX_DISPLAYED].default == settings.DEFAULT_MAX_DISPLAYED
+    assert _PREFERENCES[PREF_DISTILL_THRESHOLD].default == settings.DEFAULT_DISTILL_THRESHOLD

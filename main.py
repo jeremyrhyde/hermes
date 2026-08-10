@@ -39,13 +39,19 @@ from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
 from config import CategoryConfigError, Settings, load_sources_config
-from core.api import PREF_MAX_DISPLAYED, PREF_SCORE_CUTOFF, create_app
+from core.api import (
+    PREF_DISTILL_THRESHOLD,
+    PREF_MAX_DISPLAYED,
+    PREF_SCORE_CUTOFF,
+    create_app,
+)
 from core.events import EventBus
 from core.state import StateStore
 from core.websocket import WebSocketManager
 from schemas.events import Event, EventType
 from services.pipeline import Pipeline
 from services.poller import Poller
+from services.profile import ProfileDistiller
 from services.scorer import ClaudeScorer
 from services.sources.registry import SourceRegistry
 from services.sources.substack import SubstackDriver
@@ -146,6 +152,7 @@ async def _build_components(
     WebSocketManager,
     StateStore,
     Poller,
+    ProfileDistiller | None,
     list[str],
     list[str],
     list[dict[str, Any]],
@@ -178,6 +185,9 @@ async def _build_components(
     )
     await store.seed_preference(
         PREF_MAX_DISPLAYED, str(settings.DEFAULT_MAX_DISPLAYED)
+    )
+    await store.seed_preference(
+        PREF_DISTILL_THRESHOLD, str(settings.DEFAULT_DISTILL_THRESHOLD)
     )
 
     # The profile is data seeded from a file, exactly like sources.yaml — and
@@ -265,6 +275,21 @@ async def _build_components(
             vocabulary=vocabulary,
         )
 
+    # The distiller needs only the key. The scorer below also needs a profile to
+    # judge against, but proposing a profile is what this one is for — gating it
+    # on having one would make the empty case, the case that most needs a
+    # proposal, the one that cannot ask for it. Without a key it stays None and
+    # `POST /profile/review` answers 503.
+    #
+    # `SCORE_MODEL` rather than `SUMMARY_MODEL`: distillation is the same kind
+    # of work scoring is — a judgment call over the whole corpus — not the
+    # grounded extraction a small model handles well.
+    distiller = (
+        None
+        if client is None
+        else ProfileDistiller(client, model=settings.SCORE_MODEL)
+    )
+
     # Scoring needs both halves of the scoring function: the key to call the
     # model, and a profile to judge against. Missing either disables it, and
     # the entry says which — "scoring is off" without a reason is the kind of
@@ -326,7 +351,7 @@ async def _build_components(
     if summarizer is not None:
         await poller.start()
 
-    return bus, ws_manager, store, poller, vocabulary, filters, failures
+    return bus, ws_manager, store, poller, distiller, vocabulary, filters, failures
 
 
 def _make_lifespan(settings: Settings):
@@ -347,6 +372,7 @@ def _make_lifespan(settings: Settings):
                 ws_manager,
                 store,
                 poller,
+                distiller,
                 vocabulary,
                 filters,
                 failures,
@@ -368,6 +394,9 @@ def _make_lifespan(settings: Settings):
             # it seeds both lists to [] and the lifespan fills them in.
             app.state.category_vocabulary = vocabulary
             app.state.category_filters = filters
+            # Unlike the scorer, the distiller is wired whenever the key
+            # exists: it needs no profile, since proposing one is the point.
+            app.state.distiller = distiller
             app.state.startup_failures = failures
 
             logger.info("main: ready — %d startup failure(s)", len(failures))

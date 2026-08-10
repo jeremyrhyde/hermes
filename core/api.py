@@ -44,11 +44,13 @@ from fastapi import (
     status,
 )
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict
 
 from core.state import parse_iso
 from schemas.article import FeedItem, InteractionIn, RatingIn
 from schemas.preferences import PreferenceIn
 from schemas.source import SourceConfig, SourceRef
+from services.profile import DISTILL_VERSION, DistillationError
 
 if TYPE_CHECKING:  # pragma: no cover
     from config import Settings
@@ -135,6 +137,7 @@ def _selected_categories(
 
 PREF_SCORE_CUTOFF = "score_cutoff"
 PREF_MAX_DISPLAYED = "max_displayed"
+PREF_DISTILL_THRESHOLD = "distill_threshold"
 """The runtime knob keys.
 
 Constants rather than string literals because three places spell them — this
@@ -156,20 +159,24 @@ class _IntKnob:
 
 
 _PREFERENCES: dict[str, _IntKnob] = {
-    # Mirrors ``Settings.DEFAULT_SCORE_CUTOFF`` / ``DEFAULT_MAX_DISPLAYED``,
-    # which are seeds for the ``preferences`` table. These are the fallbacks
-    # for a read that finds no row at all — an app whose store was never
-    # seeded, or a key deleted by hand — so the two must agree, or first-run
-    # behavior would change the moment the seeder ran.
+    # Mirrors ``Settings.DEFAULT_SCORE_CUTOFF`` / ``DEFAULT_MAX_DISPLAYED`` /
+    # ``DEFAULT_DISTILL_THRESHOLD``, which are seeds for the ``preferences``
+    # table. These are the fallbacks for a read that finds no row at all — an
+    # app whose store was never seeded, or a key deleted by hand — so the two
+    # must agree, or first-run behavior would change the moment the seeder ran.
     PREF_SCORE_CUTOFF: _IntKnob(default=0, low=0, high=100),
     PREF_MAX_DISPLAYED: _IntKnob(default=50, low=1, high=200),
+    PREF_DISTILL_THRESHOLD: _IntKnob(default=20, low=5, high=200),
 }
 """Every writable knob, with its range.
 
 The ranges are not cosmetic. A cutoff outside 0-100 empties the feed, and a
 ``max_displayed`` below 1 reaches ``ranked_items`` as a negative slice bound,
 which quietly displays *n-1* articles rather than failing. ``ranked_items``
-trusts its ``limit``; this table is where that trust is earned.
+trusts its ``limit``; this table is where that trust is earned. The distillation
+threshold's floor is the same kind of guard on a different cost: below a handful
+of ratings a proposal is a rewrite from noise, and every generation is a
+long model call the reader pays for.
 """
 
 
@@ -424,6 +431,310 @@ def _build_preferences_router() -> APIRouter:
     return router
 
 
+DISTILL_CORPUS_LIMIT = 200
+"""How many rated articles at most are sent to the distiller.
+
+``rated_articles()`` is uncapped by design and ordered newest-rating-first, so
+truncating with ``[:N]`` here keeps the freshest signal and drops only the
+oldest — the ratings least likely to describe what the reader wants now. Order
+is what makes the truncation safe; a differently-ordered corpus could not be
+sliced at all.
+
+200 cards is roughly 30k tokens of prompt, which is many months of reading at
+the default 20-rating cadence and still a fraction of the context. Uncapped, a
+few hundred rated articles would bloat every proposal call for evidence the
+model has already seen the shape of.
+"""
+
+_RESCORE_COUNT_CAP = 100_000
+"""Upper bound on the re-score queue depth reported to the reader.
+
+``articles_pending`` takes a ``LIMIT`` because the poller batches through it;
+here it is being counted, not consumed, so the cap only has to sit above any
+corpus this reader will ever accumulate.
+"""
+
+
+class ProfileIn(BaseModel):
+    """Request body for ``PUT /profile/``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    body: str
+
+
+class ApprovalIn(BaseModel):
+    """Request body for ``POST /profile/review/{version}/approve``.
+
+    ``body`` carries the reader's edit, and its absence is not the same as an
+    empty string: ``None`` means "approve what was proposed", while ``""`` is a
+    real edit that would wipe the profile. Editing is not a separate route on
+    purpose — a saved edit that was never approved would be a body nobody
+    agreed to, sitting one query away from being live.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    body: str | None = None
+    rescore: bool = False
+
+
+def _distiller(request: Request) -> Any:
+    return request.app.state.distiller
+
+
+async def _profile_kind(store: "StateStore", version: str) -> str | None:
+    """The ``kind`` of one profile version — ``'stated'`` or ``'distilled'``.
+
+    Read here rather than through :class:`~core.state.StateStore` because no
+    accessor exposes it yet and the store is out of scope for this change. Fold
+    it into ``latest_profile`` the next time that method is touched; this is the
+    only raw query in the API layer and should not acquire company.
+    """
+
+    cur = await store.db.execute(
+        "SELECT kind FROM profile_versions WHERE version = ?", (version,)
+    )
+    row = await cur.fetchone()
+    return row["kind"] if row else None
+
+
+async def _distill_threshold(store: "StateStore") -> int:
+    """How many ratings must accumulate before a proposal may be generated.
+
+    Deliberately *not* read through :func:`_knob`. That function substitutes the
+    default for any stored value outside the knob's range, which is right for
+    the cutoff — an out-of-range cutoff silently empties the feed — but wrong
+    here: the 5-200 range guards what the reader may type into the UI, and a
+    value written directly to the table is still the cadence this loop should
+    run at. Substituting 20 for it would make the review panel report a
+    threshold it was not using.
+
+    A non-numeric or non-positive value is a different matter: there is no
+    cadence to honor, so the default stands and the fallback is logged the way
+    :func:`_knob` logs its own.
+    """
+
+    default = _PREFERENCES[PREF_DISTILL_THRESHOLD].default
+    raw = await store.get_preference(PREF_DISTILL_THRESHOLD)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "api: preference %s holds a non-numeric value %r; using %d",
+            PREF_DISTILL_THRESHOLD, raw, default,
+        )
+        return default
+    if value < 1:
+        logger.warning(
+            "api: preference %s holds %d, which would propose from no evidence; "
+            "using %d",
+            PREF_DISTILL_THRESHOLD, value, default,
+        )
+        return default
+    return value
+
+
+def _build_profile_router() -> APIRouter:
+    router = APIRouter(prefix="/profile", tags=["profile"])
+
+    @router.get("/")
+    async def get_profile(request: Request) -> dict[str, Any]:
+        """The live profile, or an empty shape when there is none.
+
+        Not a 404. With the profile editable from Settings, "no profile yet" is
+        where a reader starts, and an empty textarea is where they write their
+        first one — without ever creating ``profile.md``. A 404 would make the
+        UI render an error page over the control that fixes it.
+        """
+
+        store = _store(request)
+        current = await store.latest_profile()
+        if current is None:
+            return {"version": None, "body": "", "kind": None}
+        version, body = current
+        return {"version": version, "body": body, "kind": await _profile_kind(store, version)}
+
+    @router.put("/")
+    async def put_profile(payload: ProfileIn, request: Request) -> dict[str, str]:
+        """Replace the profile, appending a new ``stated`` version.
+
+        Approved on write: a profile the reader typed has nobody but its author
+        to approve it, and leaving it pending would park it behind the review
+        panel where it would look like a distillation they never asked for.
+
+        Blank is a 400 for the reason the distiller rejects a blank proposal —
+        the scorer would go on judging every article, against nothing.
+        """
+
+        if not payload.body.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="the profile body cannot be empty",
+            )
+        version = await _store(request).create_profile_version(
+            payload.body, "stated", True
+        )
+        return {"version": version}
+
+    @router.get("/review")
+    async def get_review(request: Request) -> dict[str, Any]:
+        """Where the review loop stands: one state, not a set of flags.
+
+        ``state`` is an enum — ``insufficient`` | ``ready`` | ``pending`` —
+        because the three panels are mutually exclusive. A boolean ``ready``
+        beside a nullable ``proposal`` would let the UI derive a fourth
+        combination that has no rendering.
+
+        ``count`` is reported even when it is not what gates the next action, so
+        the panel can always say how far along the cadence is.
+        """
+
+        store = _store(request)
+        count = await store.ratings_since_last_review()
+        threshold = await _distill_threshold(store)
+        proposal = await store.pending_proposal()
+
+        if proposal is not None:
+            state = "pending"
+        elif count >= threshold:
+            state = "ready"
+        else:
+            state = "insufficient"
+
+        return {
+            "state": state,
+            "count": count,
+            "threshold": threshold,
+            "proposal": proposal,
+        }
+
+    @router.post("/review")
+    async def generate_review(request: Request) -> dict[str, str]:
+        """Distill a fresh proposal from the rated corpus.
+
+        The pending check comes before the threshold check because an
+        outstanding proposal resets the rating count: checking the threshold
+        first would answer "not enough ratings" for a panel that is in fact
+        showing a proposal awaiting review.
+
+        Nothing here goes live. The row is written unapproved, which is what
+        keeps :meth:`~core.state.StateStore.latest_profile` from serving it.
+        """
+
+        store = _store(request)
+        distiller = _distiller(request)
+        if distiller is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="the distiller is not configured; ANTHROPIC_API_KEY is not set",
+            )
+
+        if await store.pending_proposal() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="a proposal is already awaiting review",
+            )
+
+        count = await store.ratings_since_last_review()
+        threshold = await _distill_threshold(store)
+        if count < threshold:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"only {count} rating(s) since the last review; "
+                       f"{threshold} are needed",
+            )
+
+        current = await store.latest_profile()
+        rated = (await store.rated_articles())[:DISTILL_CORPUS_LIMIT]
+        try:
+            body = await distiller.propose(current[1] if current else "", rated)
+        except DistillationError as exc:
+            # 502, not 500: the request was valid and the server did its part —
+            # the model call is an upstream dependency that failed, or returned
+            # something unusable. The detail is the message the panel shows, so
+            # the reader can tell "try again" from "something is wrong with the
+            # data" without reading a log.
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"could not distill a profile: {exc}",
+            ) from exc
+
+        version = await store.create_profile_version(
+            body, "distilled", False, distill_version=DISTILL_VERSION
+        )
+        return {"version": version}
+
+    @router.post("/review/{version}/approve")
+    async def approve(
+        version: str, payload: ApprovalIn, request: Request
+    ) -> dict[str, Any]:
+        """Make a proposal live, optionally amended, optionally re-scoring.
+
+        A supplied-but-blank body is a 400 rather than an approval:
+        ``resolve_proposal`` treats ``""`` as a real edit and would write it, so
+        the reader would end up with an approved, live, empty profile that the
+        scorer judges every article against. The state layer deliberately does
+        not guard this — it only distinguishes "no edit" from "an edit" — so the
+        guard belongs here, next to the same rejection on ``PUT /profile/``.
+        """
+
+        if payload.body is not None and not payload.body.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="the profile body cannot be empty",
+            )
+
+        store = _store(request)
+        if not await store.resolve_proposal(version, True, payload.body):
+            raise _unresolvable(version)
+
+        rescored = 0
+        if payload.rescore:
+            # `clear_scores_for_rescore` returns how many checkpoints it
+            # cleared, which undercounts the corpus: an article summarized but
+            # never scored has no checkpoint to clear and is still something the
+            # new profile will judge. The queue depth after the clear is what
+            # the reader is promised, because it is what will actually be
+            # re-scored.
+            await store.clear_scores_for_rescore()
+            rescored = len(
+                await store.articles_pending("score", limit=_RESCORE_COUNT_CAP)
+            )
+        return {"version": version, "rescored": rescored}
+
+    @router.post("/review/{version}/reject", status_code=status.HTTP_204_NO_CONTENT)
+    async def reject(version: str, request: Request) -> None:
+        """Discard a proposal. The live profile is untouched.
+
+        A rejection still counts as a review: the proposal row keeps its
+        timestamp, so the rating counter restarts from it and the reader is not
+        offered the same evidence again immediately.
+        """
+
+        if not await _store(request).resolve_proposal(version, False):
+            raise _unresolvable(version)
+
+    return router
+
+
+def _unresolvable(version: str) -> HTTPException:
+    """409, not 404: the panel is stale and the UI should refetch.
+
+    ``resolve_proposal`` matches pending rows only, so a ``False`` covers both
+    "no such version" and "already approved or rejected". The second is what
+    actually happens — two tabs open on the same proposal, or a double-click —
+    and it is a conflict with the current state rather than a missing resource.
+    """
+
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"profile version {version!r} is not awaiting review",
+    )
+
+
 def _unknown_article(article_id: int) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -643,6 +954,7 @@ def create_app(
     category_vocabulary: list[str] | None = None,
     category_filters: list[str] | None = None,
     mount_static: bool = True,
+    distiller: Any = None,
 ) -> FastAPI:
     """Build and wire a :class:`FastAPI` instance.
 
@@ -663,10 +975,15 @@ def create_app(
             ``GET /categories/`` returns an empty filter row.
         mount_static: If ``False``, skip the static-file mount entirely.
             Tests pass ``False`` to keep the app hermetic.
+        distiller: The :class:`~services.profile.ProfileDistiller` backing
+            ``POST /profile/review``. Left ``None`` when no API key is
+            configured, so that route returns 503 exactly as
+            ``POST /sources/{id}/poll`` does without a poller. Unlike the
+            scorer, it needs no profile — proposing one is the point.
 
     The returned app has the wired components on ``app.state``:
     ``event_bus``, ``ws_manager``, ``state_store``, ``poller``, ``settings``,
-    ``category_vocabulary``, ``category_filters``.
+    ``category_vocabulary``, ``category_filters``, ``distiller``.
 
     As new components arrive (a state store, a scheduler, service clients),
     add them as keyword-only args here and assign them onto ``app.state``
@@ -686,11 +1003,13 @@ def create_app(
     app.state.settings = settings
     app.state.category_vocabulary = category_vocabulary or []
     app.state.category_filters = category_filters or []
+    app.state.distiller = distiller
 
     app.include_router(_build_feed_router())
     app.include_router(_build_saved_router())
     app.include_router(_build_ranked_router())
     app.include_router(_build_preferences_router())
+    app.include_router(_build_profile_router())
     app.include_router(_build_articles_router())
     app.include_router(_build_categories_router())
     app.include_router(_build_sources_router())
