@@ -360,3 +360,29 @@ async def test_rescore_skips_an_article_that_became_unusable_after_scoring(
     await store.mark_unusable(a, "paywalled", NOW)
 
     assert await store.clear_scores_for_rescore() == 0
+
+
+async def test_a_distilled_version_records_the_prompt_that_drafted_it(
+    store: StateStore,
+) -> None:
+    """Which prompt wrote the body is not recoverable once the reader edits it."""
+    v = await store.create_profile_version(
+        "proposed", "distilled", False, distill_version="distill-v1"
+    )
+
+    cur = await store.db.execute(
+        "SELECT distill_version FROM profile_versions WHERE version = ?", (v,)
+    )
+    assert (await cur.fetchone())["distill_version"] == "distill-v1"
+
+
+async def test_a_hand_written_version_has_no_distill_version(
+    store: StateStore,
+) -> None:
+    """Omitting it stores NULL — a ``stated`` row was never distilled."""
+    v = await store.create_profile_version("hand-written", "stated", True)
+
+    cur = await store.db.execute(
+        "SELECT distill_version FROM profile_versions WHERE version = ?", (v,)
+    )
+    assert (await cur.fetchone())["distill_version"] is None

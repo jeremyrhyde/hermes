@@ -1,0 +1,27 @@
+-- 006_distill_version.sql — which distillation prompt drafted a profile.
+--
+-- Migrations are forward-only and must never be edited after running
+-- anywhere. Like 003, 004 and 005 this uses ALTER TABLE ADD COLUMN, which
+-- SQLite offers no IF NOT EXISTS for, so a regression in the runner's
+-- version-skip filter fails loudly on the next restart instead of passing
+-- silently.
+--
+-- Do NOT set PRAGMA user_version here. The runner derives the version from
+-- the NNN_ filename prefix and sets it itself; a pragma in the file would be
+-- a second source of truth for the schema version.
+--
+-- services/profile.py pins DISTILL_VERSION, the version of the distillation
+-- prompt, but until now nothing recorded which prompt produced which
+-- proposal. That is the one fact about a distilled profile that cannot be
+-- recovered afterwards: the reader may approve the body with edits, so the
+-- text on the row is no longer evidence of what the prompt wrote. A later
+-- prompt revision would otherwise leave no trace against the profiles the
+-- earlier one drafted, and no way to tell a regression in the prompt from a
+-- change in the reader's taste.
+--
+-- Nullable rather than defaulted, because NULL is a true answer and not a
+-- gap: a kind='stated' row is the reader writing the profile by hand and was
+-- never distilled at all. On a kind='distilled' row NULL means only that the
+-- row predates this column.
+
+ALTER TABLE profile_versions ADD COLUMN distill_version TEXT;

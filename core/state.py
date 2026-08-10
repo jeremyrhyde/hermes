@@ -780,7 +780,7 @@ class StateStore:
         await self.db.commit()
 
     async def create_profile_version(
-        self, body: str, kind: str, approved: bool
+        self, body: str, kind: str, approved: bool, distill_version: str | None = None
     ) -> str:
         """Append a profile version and return its name.
 
@@ -802,6 +802,12 @@ class StateStore:
         to review them; leaving it false is what makes the row a proposal that
         :meth:`latest_profile` will not serve until :meth:`resolve_proposal`
         settles it.
+
+        *distill_version* records which distillation prompt drafted *body*,
+        which stops being readable off the row the moment the reader approves
+        it with edits. It is optional because a ``stated`` row the reader wrote
+        by hand has no such prompt; a ``distilled`` row without one predates
+        this column.
         """
 
         cur = await self.db.execute(
@@ -815,10 +821,10 @@ class StateStore:
         await self.db.execute(
             """
             INSERT INTO profile_versions
-                (version, body, kind, created_at, approved_at)
-            VALUES (?, ?, ?, ?, ?)
+                (version, body, kind, created_at, approved_at, distill_version)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (version, body, kind, now, now if approved else None),
+            (version, body, kind, now, now if approved else None, distill_version),
         )
         await self.db.commit()
         return version
