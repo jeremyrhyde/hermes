@@ -127,15 +127,12 @@ async def _seed_profile_from_file(
     #
     # And it is only worth comparing while that row is still the profile in
     # effect. Once a later version has been approved — a distillation, or a
-    # Settings edit — the file has done its one job and any difference is
-    # expected rather than a problem: reporting it would put a permanent entry
-    # in /health from the reader's first edit onward, and the remedy below
-    # would tell them to delete the seeded row, which is not what is in effect
-    # and whose deletion would leave the newer text untouched but the warning
-    # still firing. "In effect" rather than "is the only row" on purpose: a
-    # proposal that is pending or was rejected leaves the seed live, the file's
-    # edits still inert, and the remedy still correct, so the warning must
-    # survive both.
+    # Settings edit — the file has done its one job and a difference is expected
+    # rather than a problem, so reporting it would leave a permanent entry in
+    # /health from the reader's first edit onward. "In effect" rather than "is
+    # the only row" on purpose: a proposal that is pending or was rejected
+    # leaves the seed live, the file's edits still inert, and the remedy still
+    # correct, so the warning must survive both.
     latest = await store.latest_profile()
     if latest is not None and latest[0] != PROFILE_VERSION:
         return

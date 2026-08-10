@@ -67,8 +67,13 @@ async def test_editing_the_file_after_seeding_is_reported_not_silent(
     assert (await store.latest_profile())[1] == "original", "the file must not clobber"
     assert [f["component"] for f in failures] == ["profile"]
     assert "differs" in failures[0]["error"]
-    assert "DELETE FROM profile_versions" in failures[0]["error"], (
-        "the report must say how to adopt the edit, not merely that it was ignored"
+    remedy = f"DELETE FROM profile_versions WHERE version = '{PROFILE_VERSION}';"
+    assert remedy in failures[0]["error"], (
+        "the report must say how to adopt the edit, not merely that it was "
+        "ignored — and the DELETE must name the seeded row specifically, since "
+        "every other version is text the file has no claim on. Asserting only "
+        "that PROFILE_VERSION appears somewhere in the message does not pin "
+        "this: the sentence above the remedy names it too."
     )
 
 
@@ -146,6 +151,37 @@ async def test_divergence_is_silent_once_the_profile_has_moved_on(
     await _seed_profile_from_file(store, str(path), failures)
 
     assert failures == []
+
+
+async def test_a_rejected_proposal_does_not_count_as_moving_on(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """A later row exists, but the seed is still what scoring uses.
+
+    This is why the guard asks what is *in effect* rather than whether the seed
+    is the only row. A resolved proposal reads like the profile has moved on and
+    it has not: the rejected body was never live, the file's edits are still
+    inert, and the remedy still names the row that is. Counting rows instead
+    would swallow this edit silently — the exact failure the warning exists to
+    prevent. The pending case works the same way; rejection is the one that
+    looks settled.
+    """
+    path = tmp_path / "profile.md"
+    path.write_text("original", encoding="utf-8")
+    await _seed_profile_from_file(store, str(path), [])
+
+    proposed = await store.create_profile_version("a proposal", "distilled", False)
+    assert await store.resolve_proposal(proposed, approved=False)
+
+    path.write_text("edited", encoding="utf-8")
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, str(path), failures)
+
+    assert [f["component"] for f in failures] == ["profile"]
+    assert PROFILE_VERSION in failures[0]["error"]
+    assert (await store.latest_profile())[0] == PROFILE_VERSION, (
+        "the rejected body must never have been in effect"
+    )
 
 
 async def test_divergence_still_reported_while_only_the_seed_exists(
