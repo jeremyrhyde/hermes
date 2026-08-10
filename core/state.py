@@ -696,13 +696,21 @@ class StateStore:
         approved on write (there is nobody but the author to approve a
         hand-written one), so this filter excludes nothing today; it exists so
         that phase 4 cannot forget it.
+
+        Newest means *most recently approved*, not most recently created. A
+        proposal is written before the reader hand-edits the profile but
+        approved after, so ordering by ``created_at`` would leave the older edit
+        live while every signal — a ``True`` from :meth:`resolve_proposal`, a
+        now-empty :meth:`pending_proposal` — reported that the approval took.
+        The filter above guarantees ``approved_at`` is non-NULL across the
+        ordered set, so this ordering is total.
         """
 
         cur = await self.db.execute(
             """
             SELECT version, body FROM profile_versions
              WHERE approved_at IS NOT NULL
-             ORDER BY created_at DESC, rowid DESC LIMIT 1
+             ORDER BY approved_at DESC, rowid DESC LIMIT 1
             """
         )
         row = await cur.fetchone()
@@ -754,10 +762,18 @@ class StateStore:
         """Append a profile version and return its name.
 
         The single writer of the ``profile-vN`` scheme, so N lives in one place.
-        N counts *rows*, not approved profiles: a rejected proposal consumes a
-        number, and an approved sequence can therefore read v1, v3, v6. That is
-        the point — every number identifies exactly one body, which is what a
-        :class:`Score`'s ``profile_version`` stamp needs to stay resolvable.
+        N is one past the highest number already issued, which means the
+        sequence has gaps and that is deliberate. A rejected proposal keeps its
+        number, so an approved sequence can read v1, v3, v6 — every number
+        identifies exactly one body, which is what a :class:`Score`'s
+        ``profile_version`` stamp needs to stay resolvable. Deriving N from the
+        row count instead would reissue a live number the moment a row went
+        missing, and ``main.py``'s divergence remedy tells the operator to
+        ``DELETE`` the seeded version: the count would then collide with the
+        surviving row and every later insert would fail, permanently.
+
+        ``SUBSTR(version, 10)`` skips the nine-character ``profile-v`` prefix,
+        and the ``GLOB`` keeps any differently-named row out of the arithmetic.
 
         *approved* writes ``approved_at`` immediately, for versions with nobody
         to review them; leaving it false is what makes the row a proposal that
@@ -765,8 +781,13 @@ class StateStore:
         settles it.
         """
 
-        cur = await self.db.execute("SELECT COUNT(*) AS n FROM profile_versions")
-        version = f"profile-v{(await cur.fetchone())['n'] + 1}"
+        cur = await self.db.execute(
+            """
+            SELECT COALESCE(MAX(CAST(SUBSTR(version, 10) AS INTEGER)), 0) + 1 AS n
+              FROM profile_versions WHERE version GLOB 'profile-v*'
+            """
+        )
+        version = f"profile-v{(await cur.fetchone())['n']}"
         now = iso(utcnow())
         await self.db.execute(
             """

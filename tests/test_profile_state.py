@@ -56,6 +56,55 @@ async def test_an_old_version_stays_readable(store: StateStore) -> None:
     assert await store.profile_body(v1) == "original"
 
 
+async def test_approving_an_older_proposal_supersedes_a_newer_edit(
+    store: StateStore,
+) -> None:
+    """Live-ness follows approval order, not creation order.
+
+    A proposal is created before the reader hand-edits the profile but approved
+    after, so ordering by ``created_at`` would make the approval a silent no-op:
+    every signal reports success while the older hand-edit stays live.
+    """
+    await store.create_profile_version("original", "stated", True)
+    proposal = await store.create_profile_version("proposal", "distilled", False)
+    await store.create_profile_version("hand-edited", "stated", True)
+
+    assert await store.resolve_proposal(proposal, approved=True) is True
+
+    assert await store.latest_profile() == (proposal, "proposal")
+
+
+async def test_versioning_survives_a_deleted_row(store: StateStore) -> None:
+    """Numbering keys off the highest number, not the row count.
+
+    ``main.py`` tells the operator to ``DELETE`` the seeded version to resolve a
+    profile divergence. A count-derived N would then re-issue a number that is
+    already taken, and every later insert would collide forever.
+    """
+    await store.seed_profile("profile-v1", "seeded")
+    await store.create_profile_version("second", "distilled", True)
+
+    await store.db.execute("DELETE FROM profile_versions WHERE version = 'profile-v1'")
+    await store.db.commit()
+
+    assert await store.create_profile_version("third", "distilled", True) == "profile-v3"
+
+
+async def test_an_empty_edit_is_not_the_same_as_no_edit(store: StateStore) -> None:
+    """``None`` means "no edit"; ``""`` is an edit to empty text.
+
+    ``COALESCE`` cannot tell them apart on its own, so the distinction is pinned
+    here. Rejecting a blank body is a route's job, not the store's.
+    """
+    v = await store.create_profile_version("proposed", "distilled", False)
+    await store.resolve_proposal(v, approved=True)
+    assert await store.profile_body(v) == "proposed"
+
+    blank = await store.create_profile_version("proposed", "distilled", False)
+    await store.resolve_proposal(blank, approved=True, body="")
+    assert await store.profile_body(blank) == ""
+
+
 async def test_pending_proposal_is_found(store: StateStore) -> None:
     await store.create_profile_version("live", "stated", True)
     v = await store.create_profile_version("proposed", "distilled", False)
@@ -113,7 +162,7 @@ async def test_rejecting_leaves_the_previous_profile_live(store: StateStore) -> 
 
 
 async def test_a_rejected_proposal_is_retained(store: StateStore) -> None:
-    """The record and the counter's reset point both live here."""
+    """Section 2.5: the record and the counter's reset point both live here."""
     v = await store.create_profile_version("proposed", "distilled", False)
     await store.resolve_proposal(v, approved=False)
 
