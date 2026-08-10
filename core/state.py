@@ -73,7 +73,35 @@ already rules out duplicate rows.
 """
 
 
-_FEED_ROW_SELECT = """
+_LATEST_RATING = """
+    (SELECT value FROM ratings r
+      WHERE r.article_id = a.id
+      ORDER BY r.created_at DESC, r.id DESC LIMIT 1)
+"""
+"""The article's current ±1 verdict: the newest row of an append-only table.
+
+The tie-break on ``id`` is load-bearing. ``ratings`` and ``scores`` are both
+append-only, and on a colliding ``created_at`` SQLite resolves by rowid
+*ascending*, so without it the OLDER row wins and a re-rating is silently
+discarded.
+
+Shared rather than repeated, along with :data:`_LATEST_SCORE`. Both correlate on
+``a.id``, so every site must expose the articles table as ``a``. The one bug
+this file has actually shipped came from duplicating a fragment of a query and
+changing one copy; see :data:`_FEED_ROW_SELECT`.
+"""
+
+
+_LATEST_SCORE = """
+    (SELECT score FROM scores sc
+      WHERE sc.article_id = a.id
+      ORDER BY sc.created_at DESC, sc.id DESC LIMIT 1)
+"""
+"""The article's current score, newest-wins. See :data:`_LATEST_RATING` for why
+the ``id`` tie-break is not optional."""
+
+
+_FEED_ROW_SELECT = f"""
     SELECT a.id            AS article_id,
            a.canonical_url AS url,
            a.published_at  AS published_at,
@@ -83,12 +111,8 @@ _FEED_ROW_SELECT = """
            src.id          AS source_id,
            src.name        AS source_name,
            src.type        AS source_type,
-           (SELECT value FROM ratings r
-             WHERE r.article_id = a.id
-             ORDER BY r.created_at DESC, r.id DESC LIMIT 1) AS rating,
-           (SELECT score FROM scores sc
-             WHERE sc.article_id = a.id
-             ORDER BY sc.created_at DESC, sc.id DESC LIMIT 1) AS score
+           {_LATEST_RATING} AS rating,
+           {_LATEST_SCORE} AS score
       FROM articles a
       JOIN summaries s ON s.article_id = a.id
       JOIN sources  src ON src.id = a.source_id
@@ -109,10 +133,9 @@ makes a card a card. ``unusable_at IS NULL`` is redundant behind it — an
 unusable article is never summarized — and is kept so the invariant is local to
 the read site rather than inferred from another column.
 
-The tie-break on ``id`` is load-bearing: ``scores`` and ``ratings`` are both
-append-only, and on a colliding ``created_at`` SQLite resolves by rowid
-*ascending*, so the OLDER row would win and a re-score would be silently
-discarded.
+The latest-rating and latest-score subqueries are :data:`_LATEST_RATING` and
+:data:`_LATEST_SCORE`, shared with ``rated_articles`` for the same reason and
+carrying the rationale for their ``id`` tie-break.
 """
 
 
@@ -903,26 +926,29 @@ class StateStore:
         already decoded, as :meth:`feed_items` returns them, so no caller has to
         know that one is JSON in a column and the other a second table.
 
-        Latest-wins on the rating, matching :meth:`rate_article`, with the same
-        ``id`` tie-break :data:`_FEED_ROW_SELECT` explains. Clearing a rating
-        deletes its rows, so the article drops out entirely.
+        Latest-wins on the rating and the score, via the same
+        :data:`_LATEST_RATING` and :data:`_LATEST_SCORE` subqueries the feed
+        uses — shared so the two views of "current verdict" cannot drift, even
+        though the surrounding projections differ. Clearing a rating deletes its
+        rows, so the article drops out entirely.
+
+        ``rated_at`` is selected and then dropped from the result. It exists to
+        order on: writing the subquery inline in ``ORDER BY`` would be a third
+        copy of it, and it is a sort key rather than something the caller asked
+        for.
         """
 
         import json
 
         cur = await self.db.execute(
-            """
+            f"""
             SELECT a.id       AS article_id,
                    s.headline AS headline,
                    s.bullets_json AS bullets_json,
-                   (SELECT value FROM ratings r
-                     WHERE r.article_id = a.id
-                     ORDER BY r.created_at DESC, r.id DESC LIMIT 1) AS rating,
+                   {_LATEST_RATING} AS rating,
+                   {_LATEST_SCORE} AS score,
                    (SELECT MAX(r.created_at) FROM ratings r
-                     WHERE r.article_id = a.id) AS rated_at,
-                   (SELECT score FROM scores sc
-                     WHERE sc.article_id = a.id
-                     ORDER BY sc.created_at DESC, sc.id DESC LIMIT 1) AS score
+                     WHERE r.article_id = a.id) AS rated_at
               FROM articles a
               JOIN summaries s ON s.article_id = a.id
              WHERE a.summarized_at IS NOT NULL

@@ -9,8 +9,8 @@ from schemas.article import ArticleRef, Summary
 from schemas.scoring import Score
 from schemas.source import SourceConfig
 
-NOW = datetime.now(timezone.utc)
-LATER = NOW + timedelta(hours=1)
+NOW = datetime.now(timezone.utc) - timedelta(hours=1)
+LATER = NOW + timedelta(hours=2)
 """Anchored to the real clock, not a fixed date, and only these two constants.
 
 The counter tests interleave rating timestamps the test supplies with proposal
@@ -20,6 +20,14 @@ older than the row the store writes a moment later. A fixed past date makes
 that arrangement true for one hour of one day and false forever after — the
 same failure mode as the pinned seed clock elsewhere in the suite. Nothing here
 depends on the absolute date, only on ``NOW < proposal < LATER``.
+
+The hour either side is margin, not decoration. Anchoring ``NOW`` at the current
+instant would leave ``NOW < proposal`` holding by however many milliseconds pass
+between importing this module and the store's own ``utcnow()`` call — true under
+any forward-moving clock, but an NTP step, a restored VM snapshot or a
+misconfigured offset would break it. An hour on each side puts both inequalities
+out of reach of that. It also makes an ingested article's ``published_at``
+unambiguously historical, which is what it should be.
 """
 CFG = SourceConfig(id="acx", type="substack", name="ACX", feed_url="https://x/feed")
 
