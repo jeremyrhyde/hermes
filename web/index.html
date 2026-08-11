@@ -344,7 +344,21 @@
         </p>
       </div>
 
-      <p class="hint knob-error" role="status" x-show="knobError" x-text="knobError"></p>
+      <!-- A class bind, not x-show, and every message paragraph below is the
+           same. These are all written by a handler that clears the old message,
+           awaits a request, then sets the new one — and over localhost, which is
+           the only place this app runs, the response lands inside the same
+           animation frame the clear did. That is the shape x-show cannot
+           survive: its hide defers through queueMicrotask -> rAF -> a promise
+           chain while its show is a bare rAF, so the late hide swallows the show
+           and the paragraph ends up display:none with the new text already
+           written into it. It bites the *second* consecutive message, the first
+           clear being a no-op assignment reactivity skips — which is exactly
+           "I tapped Propose again and it silently did nothing".
+           A class bind has no rAF path at all, so no ordering of clear-and-set
+           can strand it. The three review panels keep x-show for a different
+           reason: they never all go false, so they can only swap. -->
+      <p class="hint knob-error" role="status" :class="{ hidden: !knobError }" x-text="knobError"></p>
 
       <!-- ---------------------------------------------------------------- -->
       <!-- Taste profile                                                    -->
@@ -357,13 +371,18 @@
            what loses the edit. The seed moves only when a different version
            arrives. -->
       <div class="setting setting-block">
-        <h3 class="section-title profile-head">
-          <span>Taste profile</span>
+        <!-- The version is a sibling of the heading, not inside it: nested, a
+             screen reader announces the heading as "Taste profile profile-v2 ·
+             distilled", which reads as the section's name rather than as a fact
+             about it. And the heading text does double duty as the textarea's
+             real <label for>, so the field is named by the words on screen
+             instead of by an aria-label that can drift away from them. -->
+        <div class="profile-head">
+          <h3 class="section-title"><label for="profile-body">Taste profile</label></h3>
           <span class="profile-version" x-text="profileLabel"></span>
-        </h3>
+        </div>
         <textarea class="text-area" id="profile-body" x-ref="profileBody"
                   rows="12" spellcheck="false"
-                  aria-label="Taste profile"
                   :value="profileSeed"></textarea>
         <div class="setting-actions">
           <p class="setting-help">
@@ -375,8 +394,8 @@
                   @click="saveProfile($refs.profileBody)"
                   x-text="savingProfile ? 'Saving…' : 'Save'"></button>
         </div>
-        <p class="hint knob-error" role="status" x-show="profileError" x-text="profileError"></p>
-        <p class="hint" role="status" x-show="profileNotice" x-text="profileNotice"></p>
+        <p class="hint knob-error" role="status" :class="{ hidden: !profileError }" x-text="profileError"></p>
+        <p class="hint" role="status" :class="{ hidden: !profileNotice }" x-text="profileNotice"></p>
       </div>
 
       <!-- ---------------------------------------------------------------- -->
@@ -432,8 +451,8 @@
           </div>
         </div>
 
-        <p class="hint knob-error" role="status" x-show="reviewError" x-text="reviewError"></p>
-        <p class="hint" role="status" x-show="reviewNotice" x-text="reviewNotice"></p>
+        <p class="hint knob-error" role="status" :class="{ hidden: !reviewError }" x-text="reviewError"></p>
+        <p class="hint" role="status" :class="{ hidden: !reviewNotice }" x-text="reviewNotice"></p>
       </div>
     </section>
   </main>

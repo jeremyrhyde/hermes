@@ -633,6 +633,13 @@ function app() {
         // textareas — is rewritten out from under them on every refetch, which
         // is exactly the bug the seeds in `profileSeed`/`proposalSeed` exist to
         // avoid. Do not reason from the old claim.
+        //
+        // The draft goes back with it. The slider reverts via `el.value` while
+        // the number beside it is read from `knobDraft`, so restoring only one
+        // leaves the label showing the abandoned value over a slider that has
+        // already snapped back — the exact disagreement the note on knobDraft
+        // above says is worse than either being wrong alone.
+        this.knobDraft[key] = this._effective(key);
         el.value = this._effective(key);
         return;
       }
@@ -788,6 +795,11 @@ function app() {
         notice += ' Nothing had a score to clear.';
       }
       this.reviewNotice = notice;
+      // Back to off for the next proposal. Left alone it is sticky for the rest
+      // of the session, so the second approval of a session would arrive with
+      // the box already ticked — the thing the default being off exists to
+      // prevent, arrived at by a different route.
+      this.rescore = false;
       return this.refreshProfile();
     },
 

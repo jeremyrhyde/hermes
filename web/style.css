@@ -51,6 +51,12 @@ body {
    never flash on load. */
 [x-cloak] { display: none !important; }
 
+/* Toggled by a class bind where x-show cannot be trusted — an element whose
+   value is cleared and re-set across an await lands both transitions in one
+   animation frame, and x-show's deferred hide then swallows its own show. See
+   the note above the first message paragraph in index.html. */
+.hidden { display: none; }
+
 .sr-only {
   position: absolute;
   width: 1px; height: 1px;
@@ -589,12 +595,19 @@ main {
 
 .setting-block .section-title { margin-bottom: var(--space-3); }
 
+/* The row carrying the heading and the version, which are siblings so the
+   heading announces as just its own text. The margin moves off the <h3> and
+   onto the row, or the flex line inherits the heading's spacing and the version
+   sits off its baseline. */
 .profile-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: var(--space-3);
+  margin: var(--space-5) 0 var(--space-3);
 }
+
+.profile-head .section-title { margin: 0; }
 
 /* The version is an identifier, not a heading — it inherits .section-title's
    uppercase and tracking otherwise, which makes "profile-v2 · distilled" hard
