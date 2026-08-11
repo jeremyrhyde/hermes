@@ -71,6 +71,22 @@ scores stamped with the old one stay interpretable.
 """
 
 
+PROFILE_SEED_MARKER = "profile_seed_path"
+"""Preference recording the file this install's profile was seeded from.
+
+Written at the moment seeding actually inserts, because that is the only
+moment the fact is knowable. Nothing on a ``profile_versions`` row separates
+text the file seeded from text the reader typed into Settings — same
+``kind='stated'``, same ``approved_at``, and since Settings numbers from the
+same sequence, potentially the same name. The marker is what licenses the
+divergence remedy below, which the operator runs by hand against a row.
+
+Its value is the path rather than a flag so a moved or replaced ``profile.md``
+stops claiming a seed it did not write. The version is not recorded because
+the only name seeding ever writes is ``PROFILE_VERSION``.
+"""
+
+
 async def _seed_profile_from_file(
     store: StateStore, path: str, failures: list[dict[str, Any]]
 ) -> None:
@@ -110,10 +126,12 @@ async def _seed_profile_from_file(
         logger.error("main: taste profile %s is empty", path)
         return
 
-    await store.seed_profile(PROFILE_VERSION, body)
+    if await store.seed_profile(PROFILE_VERSION, body):
+        await store.set_preference(PROFILE_SEED_MARKER, path)
 
-    # Seeding is insert-if-absent by design — the file must never clobber a
-    # version the reader approved, least of all a distilled one from phase 4.
+    # Seeding inserts only while nothing is approved — the file must never
+    # clobber a version the reader approved, least of all a distilled one from
+    # phase 4, and must never supersede one either.
     # The cost is that editing profile.md after first boot does nothing, and
     # doing nothing silently is the part that misleads: the operator changes
     # their taste, restarts, sees identical scores, and has no reason to suspect
@@ -135,6 +153,18 @@ async def _seed_profile_from_file(
     # the only row" on purpose: a proposal that is pending or was rejected
     # leaves the seed live, the file's edits still inert, and the remedy still
     # correct, so the warning must survive both.
+    #
+    # And it is only ever emitted for a row this file demonstrably wrote. The
+    # remedy is a DELETE the operator runs by hand, so being wrong about the
+    # row's provenance destroys the reader's only copy of a profile they typed
+    # into Settings — and the name is no evidence at all, since a first
+    # Settings write on an install with no profile.md is numbered profile-v1
+    # too. The marker records the fact at the one moment it is knowable; an
+    # install that predates it, or whose file has since moved, is silent
+    # forever, which costs an advisory warning rather than the profile.
+    if await store.get_preference(PROFILE_SEED_MARKER) != path:
+        return
+
     latest = await store.latest_profile()
     if latest is not None and latest[0] != PROFILE_VERSION:
         return

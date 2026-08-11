@@ -778,26 +778,55 @@ class StateStore:
         row = await cur.fetchone()
         return row["kind"] if row else None
 
-    async def seed_profile(self, version: str, body: str) -> None:
-        """Insert only if absent, so the file never clobbers an edited profile.
+    async def seed_profile(self, version: str, body: str) -> bool:
+        """Insert only when nothing is approved. Returns whether it inserted.
 
-        The same shape as :meth:`seed_preference`, for the same reason: the file
-        on disk is a starting point, and the table is authoritative once
-        anything has written to it. ``kind='stated'`` and an ``approved_at`` set
-        on insert — a hand-written profile is approved by construction; only a
-        distilled one needs review.
+        The file on disk is a first-run seed, and the table is authoritative
+        once anything has written to it. ``kind='stated'`` and an ``approved_at``
+        set on insert — a hand-written profile is approved by construction; only
+        a distilled one needs review.
+
+        The condition is "nothing is approved", not the ``INSERT OR IGNORE`` on
+        the primary key alone that :meth:`seed_preference` uses. A conflict on
+        the name is far too narrow a guard here, because the row this must not
+        disturb need not share the seed's name and the damage does not require
+        overwriting anything: an insert alongside an approved profile carries a
+        fresher ``approved_at``, and :meth:`latest_profile` orders by exactly
+        that, so the file becomes the live profile with every existing row
+        untouched.
+
+        Approval rather than mere existence is what makes ``main.py``'s
+        divergence remedy executable. That remedy has the operator DELETE the
+        seeded row by hand so the next boot adopts the file's edits, and a
+        pending or rejected proposal is a row that survives it — under an
+        "empty table" rule the re-seed would then decline and the install would
+        be left with no live profile at all, scoring off, by following printed
+        advice. An unapproved row is not in effect and has nothing to lose here.
+        ``OR IGNORE`` still covers the name, which the approval test does not:
+        a rejected proposal can hold it.
+
+        The boolean is the caller's only chance to learn that this install's
+        profile came from a file. Nothing on the row records it — a seeded row
+        and one written through Settings are identical in ``kind``, in approval,
+        and (since :meth:`create_profile_version` numbers from the same
+        sequence) possibly in name — so a caller that needs the distinction
+        must capture it here or never have it.
         """
 
         now = iso(utcnow())
-        await self.db.execute(
+        cur = await self.db.execute(
             """
             INSERT OR IGNORE INTO profile_versions
                 (version, body, kind, created_at, approved_at)
-            VALUES (?, ?, 'stated', ?, ?)
+            SELECT ?, ?, 'stated', ?, ?
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM profile_versions WHERE approved_at IS NOT NULL
+             )
             """,
             (version, body, now, now),
         )
         await self.db.commit()
+        return cur.rowcount == 1
 
     async def create_profile_version(
         self, body: str, kind: str, approved: bool, distill_version: str | None = None

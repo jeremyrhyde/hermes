@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.state import StateStore
-from main import PROFILE_VERSION, _seed_profile_from_file
+from main import PROFILE_SEED_MARKER, PROFILE_VERSION, _seed_profile_from_file
 
 
 async def test_a_missing_profile_is_silent(store: StateStore, tmp_path: Path) -> None:
@@ -197,3 +197,112 @@ async def test_divergence_still_reported_while_only_the_seed_exists(
     await _seed_profile_from_file(store, str(path), failures)
 
     assert [f["component"] for f in failures] == ["profile"]
+
+
+async def test_following_the_remedy_actually_adopts_the_edit(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """The remedy is only advice if the next boot re-seeds.
+
+    Deleting the seeded row is the whole instruction, and the operator runs it
+    by hand — so a gate that then declines to re-seed turns the printed cure
+    into the disease: no approved profile at all, scoring silently off, and
+    nothing on screen to connect it to the DELETE they were told to run. A
+    resolved proposal is the case that exposes it, because the row it leaves
+    behind outlives the deletion.
+    """
+    path = tmp_path / "profile.md"
+    path.write_text("original", encoding="utf-8")
+    await _seed_profile_from_file(store, str(path), [])
+    proposed = await store.create_profile_version("a proposal", "distilled", False)
+    assert await store.resolve_proposal(proposed, approved=False)
+
+    path.write_text("edited", encoding="utf-8")
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, str(path), failures)
+    assert len(failures) == 1, "the divergence must be reported for this to matter"
+
+    await store.db.execute(
+        "DELETE FROM profile_versions WHERE version = ?", (PROFILE_VERSION,)
+    )
+    await store.db.commit()
+    await _seed_profile_from_file(store, str(path), [])
+
+    assert (await store.latest_profile())[1] == "edited"
+
+
+async def test_a_settings_authored_profile_survives_a_file_appearing_later(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """The fresh-install path since Settings shipped: no profile.md at all.
+
+    The reader's first Settings write is numbered ``profile-v1``, the same name
+    seeding uses. A ``profile.md`` added afterwards — by the operator, or by
+    restoring a backup — must not be able to reach that row: not by inserting
+    over it, not by superseding it, and above all not by prescribing a remedy
+    that deletes it. That remedy is followed by hand, so emitting it at all is
+    the harm; the reader's only copy of their profile is the row it names.
+    """
+    written = await store.create_profile_version("READER TEXT", "stated", True)
+    assert written == PROFILE_VERSION, "the collision this guards is real"
+
+    path = tmp_path / "profile.md"
+    path.write_text("file text", encoding="utf-8")
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, str(path), failures)
+
+    assert failures == [], "no remedy may name a row the reader authored"
+    assert await store.latest_profile() == (PROFILE_VERSION, "READER TEXT")
+
+
+async def test_a_file_appearing_later_never_becomes_the_live_profile(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """Seeding is insert-if-*nothing-exists*, not insert-if-name-is-free.
+
+    With the reader's profile under some other name, an insert of
+    ``profile-v1`` collides with nothing and carries a fresher ``approved_at``,
+    so it wins ``latest_profile`` outright. Scoring would switch to the file's
+    text with no row overwritten and nothing to notice.
+    """
+    await store.create_profile_version("first", "stated", True)
+    reader = await store.create_profile_version("READER TEXT", "stated", True)
+    await store.db.execute(
+        "DELETE FROM profile_versions WHERE version = ?", (PROFILE_VERSION,)
+    )
+    await store.db.commit()
+
+    path = tmp_path / "profile.md"
+    path.write_text("file text", encoding="utf-8")
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, str(path), failures)
+
+    assert await store.latest_profile() == (reader, "READER TEXT")
+    assert failures == []
+
+
+async def test_a_seed_from_before_the_marker_reports_nothing(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """Existing installs lose the advisory warning, and that is the trade.
+
+    A row seeded before this change carries no marker, and nothing on it
+    distinguishes it from one the reader wrote in Settings — same ``kind``,
+    same shape. Guessing wrong in one direction costs an advisory warning;
+    guessing wrong in the other prints a ``DELETE`` for the reader's own text.
+    So an unmarked install stays silent, permanently.
+    """
+    path = tmp_path / "profile.md"
+    path.write_text("original", encoding="utf-8")
+    await _seed_profile_from_file(store, str(path), [])
+    await store.db.execute(
+        "DELETE FROM preferences WHERE key = ?", (PROFILE_SEED_MARKER,)
+    )
+    await store.db.commit()
+
+    path.write_text("edited", encoding="utf-8")
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, str(path), failures)
+
+    assert failures == []
+    assert (await store.latest_profile())[1] == "original"

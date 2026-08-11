@@ -114,6 +114,56 @@ async def test_seeding_never_clobbers_an_existing_profile(store: StateStore) -> 
     assert (await store.latest_profile())[1] == "original"
 
 
+async def test_seeding_never_supersedes_a_differently_named_profile(
+    store: StateStore,
+) -> None:
+    """The file must not become live over a profile the reader approved.
+
+    Gating on the version name alone only stops the file clobbering a row it
+    would have *replaced*. A profile the reader wrote in Settings can be named
+    anything, and inserting the seed alongside it stamps a fresher
+    ``approved_at`` — so ``latest_profile`` starts serving the file's text and
+    the approved profile is silently superseded without a row being touched.
+    """
+    await store.create_profile_version("first", "stated", True)
+    reader = await store.create_profile_version("READER TEXT", "stated", True)
+    await store.db.execute("DELETE FROM profile_versions WHERE version = 'profile-v1'")
+    await store.db.commit()
+    assert reader != "profile-v1", "the seed's name must be free for this to bite"
+
+    assert await store.seed_profile("profile-v1", "file text") is False
+    assert (await store.latest_profile())[1] == "READER TEXT"
+
+
+async def test_seeding_past_an_unapproved_row_holding_its_name(
+    store: StateStore,
+) -> None:
+    """The name may be taken by a row that was never in effect.
+
+    Nothing approved means nothing to protect, so the seed should land — but a
+    proposal the reader rejected keeps its number forever, and it can be the
+    seed's. That must be a quiet no-op rather than an IntegrityError killing
+    the boot, and the rejected body must not be resurrected as live.
+    """
+    proposal = await store.create_profile_version("a proposal", "distilled", False)
+    assert proposal == "profile-v1"
+    assert await store.resolve_proposal(proposal, approved=False)
+
+    assert await store.seed_profile("profile-v1", "file text") is False
+    assert await store.latest_profile() is None
+
+
+async def test_seeding_reports_whether_it_inserted(store: StateStore) -> None:
+    """The caller cannot otherwise tell a seeded row from one already there.
+
+    ``main.py`` records that the file seeded this install at the moment it
+    does, and that marker is what licenses the destructive divergence remedy.
+    Inferring it afterwards is exactly the confusion this fixes.
+    """
+    assert await store.seed_profile("profile-v1", "body") is True
+    assert await store.seed_profile("profile-v1", "body") is False
+
+
 async def test_latest_profile_is_none_when_unseeded(store: StateStore) -> None:
     assert await store.latest_profile() is None
 
