@@ -74,10 +74,11 @@ function app() {
     // refilling the box is what the reader wants.
     profileSeed: '',
     proposalSeed: '',
-    // Whether an approval should also clear existing scores. Default on: the
-    // point of approving a revised profile is usually to have it applied to
-    // what you are already looking at.
-    rescore: true,
+    // Whether an approval should also clear existing scores. Default off, like
+    // the API's own: re-scoring is the most expensive thing this UI can ask for
+    // — a model call per article — and a box already ticked when the panel
+    // appears is closer to forcing it than to offering it.
+    rescore: false,
     // In-flight flags, one per slow action, so each button can disable and
     // relabel itself without a second element flickering in beside it.
     generating: false,
@@ -392,8 +393,8 @@ function app() {
           advisory: true,
           role: 'status',
           headline: advisory.length === 1
-            ? '1 component is waiting, not broken'
-            : `${advisory.length} components are waiting, not broken`,
+            ? '1 component is waiting to start'
+            : `${advisory.length} components are waiting to start`,
           entries: advisory,
         });
       }
@@ -617,8 +618,21 @@ function app() {
         // the await. A second writer — another tab or device — can move the
         // cutoff while this PUT is in flight, and restoring the snapshot would
         // leave the box showing a number the gate rows below it disagree with.
-        // Alpine cannot correct that afterwards: `:value` only writes to the
-        // DOM when its expression changes, and the expression did not.
+        // Alpine cannot be relied on to correct that afterwards, and the reason
+        // is not the one this comment used to give. It claimed `:value` writes
+        // to the DOM only when its expression changes; it does not. Alpine
+        // re-runs a bind whenever any *dependency* of the expression changes
+        // and writes the result to the element regardless of whether the
+        // rendered string moved. What is true is the converse: nothing here
+        // changed, so no dependency changed, so no bind re-runs and the box
+        // keeps the number the user let go of. Hence the explicit write.
+        //
+        // The distinction is not academic. These two knobs survive the wrong
+        // rule only because the value Alpine rewrites already equals the one in
+        // the box; a `:value` over anything the user types — the profile
+        // textareas — is rewritten out from under them on every refetch, which
+        // is exactly the bug the seeds in `profileSeed`/`proposalSeed` exist to
+        // avoid. Do not reason from the old claim.
         el.value = this._effective(key);
         return;
       }
