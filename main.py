@@ -63,9 +63,9 @@ logger = logging.getLogger(__name__)
 PROFILE_VERSION = "profile-v1"
 """The version stamped on the profile seeded from ``PROFILE_PATH``.
 
-A constant, not a hash of the file: seeding is insert-if-absent, so the file is
-a starting point and the table is authoritative once anything has written to
-it. Editing ``profile.md`` after the first boot therefore changes nothing —
+A constant, not a hash of the file: seeding inserts only while no profile is
+approved, so the file is a starting point and the table is authoritative once
+anything has written to it. Editing ``profile.md`` afterwards changes nothing —
 phase 4 owns editing the live profile, and it appends a new version so the
 scores stamped with the old one stay interpretable.
 """
@@ -81,9 +81,10 @@ text the file seeded from text the reader typed into Settings — same
 same sequence, potentially the same name. The marker is what licenses the
 divergence remedy below, which the operator runs by hand against a row.
 
-Its value is the path rather than a flag so a moved or replaced ``profile.md``
-stops claiming a seed it did not write. The version is not recorded because
-the only name seeding ever writes is ``PROFILE_VERSION``.
+Its value names both the file and the row — the resolved path plus the row's
+creation timestamp — because either alone can be reused for text the reader
+wrote. The path outlives the row it described the moment the divergence remedy
+below deletes it; the name is re-issued to whatever the reader writes next.
 """
 
 
@@ -126,8 +127,49 @@ async def _seed_profile_from_file(
         logger.error("main: taste profile %s is empty", path)
         return
 
-    if await store.seed_profile(PROFILE_VERSION, body):
-        await store.set_preference(PROFILE_SEED_MARKER, path)
+    # Resolved, because the path is standing in for the file. PROFILE_PATH
+    # ships as the relative ./profile.md, so launching the server from an
+    # absolute path — a systemd unit, a different working directory — would
+    # otherwise read as a different file and drop the warning without a word.
+    resolved = str(p.resolve())
+    inserted = await store.seed_profile(PROFILE_VERSION, body, PROFILE_SEED_MARKER,
+                                        resolved)
+
+    # Nothing approved and still nothing inserted means the seed's name is held
+    # by a row that was never in effect — a distillation the reader rejected,
+    # or one still pending. Reachable with no profile.md ever present, since the
+    # distiller proposes against an empty profile, and then invisible: the file
+    # is readable, non-empty, and permanently inert. The only other thing
+    # /health would say is that no profile is loaded from this path, which
+    # reads as "the file is missing" and sends the reader after a file that is
+    # sitting right there. Not phrased as a DELETE — the row is the record of
+    # what was proposed and refused, and pasting the text into Settings adopts
+    # the file without destroying anything.
+    if not inserted and await store.latest_profile() is None:
+        failures.append({
+            "component": "profile",
+            "severity": "error",
+            "error": (
+                f"{path} cannot be loaded: {PROFILE_VERSION} is already taken by "
+                f"a profile version that was proposed and never approved, so the "
+                f"file is being ignored and nothing is scoring. To adopt it, "
+                f"paste its contents into the profile editor in Settings."
+            ),
+        })
+        logger.error(
+            "main: %s cannot be seeded — %s is held by an unapproved version",
+            path, PROFILE_VERSION,
+        )
+        return
+
+    # Installs that seeded before markers existed cannot prove their profile
+    # came from a file, and the one shape that speaks for itself is a lone
+    # seeded row still identical to it. Self-gating, including on a marker
+    # already being present, so this cannot override the row-scoped one above.
+    if not inserted:
+        await store.backfill_seed_marker(
+            PROFILE_SEED_MARKER, resolved, PROFILE_VERSION, body
+        )
 
     # Seeding inserts only while nothing is approved — the file must never
     # clobber a version the reader approved, least of all a distilled one from
@@ -157,12 +199,17 @@ async def _seed_profile_from_file(
     # And it is only ever emitted for a row this file demonstrably wrote. The
     # remedy is a DELETE the operator runs by hand, so being wrong about the
     # row's provenance destroys the reader's only copy of a profile they typed
-    # into Settings — and the name is no evidence at all, since a first
-    # Settings write on an install with no profile.md is numbered profile-v1
-    # too. The marker records the fact at the one moment it is knowable; an
-    # install that predates it, or whose file has since moved, is silent
-    # forever, which costs an advisory warning rather than the profile.
-    if await store.get_preference(PROFILE_SEED_MARKER) != path:
+    # into Settings — and the name is no evidence at all, since a first Settings
+    # write on an install with no profile.md is numbered profile-v1 too. Nor is
+    # the path: this very remedy frees the name, and a reader who writes their
+    # profile in Settings before restarting gets it back, from the same file
+    # that the previous boot legitimately seeded. So the marker identifies the
+    # row — name and creation timestamp — and an install whose marker no longer
+    # matches one is silent forever, which costs an advisory warning rather than
+    # the profile.
+    if not await store.seed_marker_matches(
+        PROFILE_SEED_MARKER, resolved, PROFILE_VERSION
+    ):
         return
 
     latest = await store.latest_profile()
@@ -176,8 +223,8 @@ async def _seed_profile_from_file(
             "severity": "error",
             "error": (
                 f"{path} differs from {PROFILE_VERSION}, which was seeded from "
-                f"it and is what scoring uses. Seeding never overwrites, so the "
-                f"file's edits have no effect. To adopt them, delete the seeded "
+                f"it and is what scoring uses. Seeding never re-reads the file, "
+                f"so its edits have no effect. To adopt them, delete the seeded "
                 f"row and restart: "
                 f"DELETE FROM profile_versions WHERE version = '{PROFILE_VERSION}';"
             ),

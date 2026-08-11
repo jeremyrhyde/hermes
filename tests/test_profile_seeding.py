@@ -51,8 +51,9 @@ async def test_editing_the_file_after_seeding_is_reported_not_silent(
 ) -> None:
     """The edit is ignored by design; ignoring it silently is the bug.
 
-    Seeding is insert-if-absent so the file can never clobber a version the
-    reader approved — but an operator who edits their taste, restarts, and sees
+    Seeding inserts only while no profile is approved, so the file can never
+    clobber one the reader approved — but an operator who edits their taste,
+    restarts, and sees
     identical scores has no reason to suspect the file was ignored rather than
     the rubric being unmoved. The stored profile must win AND say so.
     """
@@ -210,6 +211,15 @@ async def test_following_the_remedy_actually_adopts_the_edit(
     nothing on screen to connect it to the DELETE they were told to run. A
     resolved proposal is the case that exposes it, because the row it leaves
     behind outlives the deletion.
+
+    Worth naming what this test now blesses: the re-seed takes the deleted
+    row's name, so ``profile-v1`` ends up stamped on two different bodies over
+    an install's life. ``scores.profile_version`` is a name with no foreign
+    key, so every score from before the DELETE now resolves to text it was
+    never judged against. That is the remedy working as designed — adopting the
+    file's edits is the whole point, and the alternative is a live profile that
+    the file can never reach — but "which text was this score judged against"
+    stops being answerable across it.
     """
     path = tmp_path / "profile.md"
     path.write_text("original", encoding="utf-8")
@@ -284,13 +294,13 @@ async def test_a_file_appearing_later_never_becomes_the_live_profile(
 async def test_a_seed_from_before_the_marker_reports_nothing(
     store: StateStore, tmp_path: Path
 ) -> None:
-    """Existing installs lose the advisory warning, and that is the trade.
+    """An unmarked row whose body has already diverged stays silent.
 
-    A row seeded before this change carries no marker, and nothing on it
-    distinguishes it from one the reader wrote in Settings — same ``kind``,
-    same shape. Guessing wrong in one direction costs an advisory warning;
-    guessing wrong in the other prints a ``DELETE`` for the reader's own text.
-    So an unmarked install stays silent, permanently.
+    Nothing on the row distinguishes a seed from text the reader wrote in
+    Settings — same ``kind``, same shape — and by the time the bodies differ
+    the backfill below can no longer tell them apart either. Guessing wrong
+    here costs the reader a ``DELETE`` aimed at their own profile, so an
+    install that reaches this state unmarked stays silent permanently.
     """
     path = tmp_path / "profile.md"
     path.write_text("original", encoding="utf-8")
@@ -306,3 +316,143 @@ async def test_a_seed_from_before_the_marker_reports_nothing(
 
     assert failures == []
     assert (await store.latest_profile())[1] == "original"
+
+
+async def test_a_profile_written_after_the_remedy_is_never_named_again(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """The remedy sets up the very bug it was implicated in, one boot later.
+
+    Delete now, restart later, use the app in between: the operator runs the
+    prescribed DELETE, the reader writes a profile in Settings before the
+    restart, and — numbering off an empty table — it is named ``profile-v1``
+    again. A marker that only remembers the *file* still matches, so the next
+    boot prints a DELETE for the row the reader just wrote. The marker has to
+    identify the row it was written for, not the path it was read from.
+    """
+    path = tmp_path / "profile.md"
+    path.write_text("original", encoding="utf-8")
+    await _seed_profile_from_file(store, str(path), [])
+    path.write_text("edited", encoding="utf-8")
+    await _seed_profile_from_file(store, str(path), [])
+
+    await store.db.execute(
+        "DELETE FROM profile_versions WHERE version = ?", (PROFILE_VERSION,)
+    )
+    await store.db.commit()
+    reader = await store.create_profile_version("MY HAND-WRITTEN TASTE", "stated", True)
+    assert reader == PROFILE_VERSION, "the collision this guards is real"
+
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, str(path), failures)
+
+    assert failures == [], "no remedy may name a row the reader authored"
+    assert await store.latest_profile() == (PROFILE_VERSION, "MY HAND-WRITTEN TASTE")
+
+
+async def test_a_file_the_seed_name_blocks_is_reported(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """A readable, non-empty profile.md that can never load must say so.
+
+    Reachable without a profile.md ever existing: the distiller proposes
+    against an empty profile, so a reader who rates their way to a first
+    distillation and rejects it leaves ``profile-v1`` held by an unapproved
+    row. Nothing is approved, so seeding is willing — and the name is taken, so
+    it silently does nothing. The file is then permanently inert, and the only
+    other thing /health says is that no profile is loaded from ./profile.md,
+    which reads as "the file is missing" and sends the reader after the wrong
+    problem.
+    """
+    proposal = await store.create_profile_version("a proposal", "distilled", False)
+    assert proposal == PROFILE_VERSION
+    assert await store.resolve_proposal(proposal, approved=False)
+
+    path = tmp_path / "profile.md"
+    path.write_text("file text", encoding="utf-8")
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, str(path), failures)
+
+    assert [f["component"] for f in failures] == ["profile"]
+    assert str(path) in failures[0]["error"]
+    assert PROFILE_VERSION in failures[0]["error"]
+    assert await store.latest_profile() is None
+
+
+async def test_an_unmarked_seed_still_matching_its_file_is_adopted(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """The install this warning was built for is the one that predates markers.
+
+    Marking a row byte-identical to the file costs nothing even if the reader
+    wrote it: the harm only begins once the file is edited, and at that point
+    the remedy adopts the edit and discards text the file already contains. So
+    the one shape worth backfilling is the shape of a real seeded install — a
+    single stated, approved ``profile-v1`` matching the file exactly — and
+    without it the warning would have fired on no install at all while the
+    silence it replaced covered every one.
+    """
+    path = tmp_path / "profile.md"
+    path.write_text("original", encoding="utf-8")
+    await _seed_profile_from_file(store, str(path), [])
+    await store.db.execute(
+        "DELETE FROM preferences WHERE key = ?", (PROFILE_SEED_MARKER,)
+    )
+    await store.db.commit()
+
+    await _seed_profile_from_file(store, str(path), [])  # boot: file still matches
+    path.write_text("edited", encoding="utf-8")
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, str(path), failures)
+
+    assert [f["component"] for f in failures] == ["profile"]
+    assert "differs" in failures[0]["error"]
+
+
+async def test_the_backfill_declines_when_the_row_is_not_alone(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """One row is what makes the shape unambiguous; anything else is a history.
+
+    A second row means something happened on this install that a plain seed
+    cannot explain, and the reader may have authored either row. The body
+    matching proves nothing on its own — the file could have been written to
+    match — so the backfill takes the whole shape or none of it.
+    """
+    path = tmp_path / "profile.md"
+    path.write_text("original", encoding="utf-8")
+    await _seed_profile_from_file(store, str(path), [])
+    proposal = await store.create_profile_version("a proposal", "distilled", False)
+    await store.resolve_proposal(proposal, approved=False)
+    await store.db.execute(
+        "DELETE FROM preferences WHERE key = ?", (PROFILE_SEED_MARKER,)
+    )
+    await store.db.commit()
+
+    await _seed_profile_from_file(store, str(path), [])
+    path.write_text("edited", encoding="utf-8")
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, str(path), failures)
+
+    assert failures == []
+
+
+async def test_reaching_the_same_file_by_another_path_still_reports(
+    store: StateStore, tmp_path: Path, monkeypatch
+) -> None:
+    """The shipped default is relative, so the path alone is not the file.
+
+    ``PROFILE_PATH`` defaults to ``./profile.md``; running the server from an
+    absolute path, or from a symlinked directory, would otherwise look like a
+    different file and drop the warning silently.
+    """
+    path = tmp_path / "profile.md"
+    path.write_text("original", encoding="utf-8")
+    await _seed_profile_from_file(store, str(path), [])
+
+    path.write_text("edited", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, "profile.md", failures)
+
+    assert [f["component"] for f in failures] == ["profile"]

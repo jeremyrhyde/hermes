@@ -11,6 +11,7 @@ correct without conversion.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -778,7 +779,13 @@ class StateStore:
         row = await cur.fetchone()
         return row["kind"] if row else None
 
-    async def seed_profile(self, version: str, body: str) -> bool:
+    async def seed_profile(
+        self,
+        version: str,
+        body: str,
+        marker_key: str | None = None,
+        marker_path: str | None = None,
+    ) -> bool:
         """Insert only when nothing is approved. Returns whether it inserted.
 
         The file on disk is a first-run seed, and the table is authoritative
@@ -802,15 +809,25 @@ class StateStore:
         "empty table" rule the re-seed would then decline and the install would
         be left with no live profile at all, scoring off, by following printed
         advice. An unapproved row is not in effect and has nothing to lose here.
-        ``OR IGNORE`` still covers the name, which the approval test does not:
-        a rejected proposal can hold it.
+
+        ``OR IGNORE`` covers the name, which the approval test does not: a
+        rejected proposal can hold it, and reachably so. The distiller proposes
+        against ``latest_profile() or ""``, so an install with no ``profile.md``
+        at all can rate its way to a first distillation and reject it, leaving
+        *version* taken by a row that was never live. Seeding is then willing
+        and blocked, which is why the caller must report the case rather than
+        read a ``False`` as "already seeded" — see ``main.py``.
 
         The boolean is the caller's only chance to learn that this install's
         profile came from a file. Nothing on the row records it — a seeded row
         and one written through Settings are identical in ``kind``, in approval,
         and (since :meth:`create_profile_version` numbers from the same
         sequence) possibly in name — so a caller that needs the distinction
-        must capture it here or never have it.
+        must capture it here or never have it. Passing *marker_key* and
+        *marker_path* records it, in this method rather than after it because
+        it must share the insert's transaction: a crash in between would leave
+        a seeded install permanently unmarked, and unmarkable, since the
+        evidence is gone by the next boot.
         """
 
         now = iso(utcnow())
@@ -825,8 +842,105 @@ class StateStore:
             """,
             (version, body, now, now),
         )
+        inserted = cur.rowcount == 1
+        if inserted and marker_key is not None and marker_path is not None:
+            await self._write_seed_marker(marker_key, marker_path, now)
         await self.db.commit()
-        return cur.rowcount == 1
+        return inserted
+
+    async def _write_seed_marker(self, key: str, path: str, created_at: str) -> None:
+        """Record which row this install's profile was seeded into, and from where.
+
+        Deliberately not committed here: every caller writes it alongside the
+        row it describes, and the two are worthless apart.
+
+        *created_at* is what makes the marker about a row rather than about a
+        file. A DELETE that resolves a divergence frees the version name, and
+        ``create_profile_version`` re-issues it to the next profile the reader
+        writes — so a marker naming only the path would still match, and would
+        vouch for text the reader typed. Timestamps are only unique enough for
+        this because they are paired with the version name and compared against
+        that one row.
+        """
+
+        await self.db.execute(
+            """
+            INSERT INTO preferences (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                           updated_at = excluded.updated_at
+            """,
+            (key, json.dumps({"path": path, "created_at": created_at}), created_at),
+        )
+
+    async def seed_marker_matches(self, key: str, path: str, version: str) -> bool:
+        """Whether *version* is still the row *path* seeded on this install.
+
+        False whenever the answer is not certain — no marker, a different file,
+        a marker written before the format existed, or a row whose timestamp
+        has moved. Every caller uses this to license a destructive instruction,
+        so an unreadable marker must read as "not ours", never as "close
+        enough".
+        """
+
+        raw = await self.get_preference(key)
+        if raw is None:
+            return False
+        try:
+            marker = json.loads(raw)
+            marked_path = marker["path"]
+            created_at = marker["created_at"]
+        except (ValueError, TypeError, KeyError):
+            return False
+        if marked_path != path:
+            return False
+
+        cur = await self.db.execute(
+            "SELECT 1 FROM profile_versions WHERE version = ? AND created_at = ?",
+            (version, created_at),
+        )
+        return await cur.fetchone() is not None
+
+    async def backfill_seed_marker(
+        self, key: str, path: str, version: str, body: str
+    ) -> bool:
+        """Mark an unmarked row that can only be a seed of *body*. Did it mark?
+
+        Installs that seeded before markers existed have no way to prove their
+        profile came from a file, and nothing on the row can settle it later.
+        One shape can be adopted anyway: a lone *version* row, stated, approved,
+        and byte-identical to the file. Even if the reader wrote that text by
+        hand, marking it costs them nothing — the divergence warning only fires
+        once the file is edited, and the remedy then replaces their text with a
+        superset of itself, the file's own contents plus the edit.
+
+        Every clause is load-bearing, and the count most of all. A second row
+        means this install has a history a plain seed cannot explain — the
+        reader may have authored either row — and equal bodies prove nothing on
+        their own, since the file can be written to match whatever it likes.
+
+        No-op when a marker already exists, so a backfill can never outlive or
+        override the row-scoped marker :meth:`seed_profile` writes.
+        """
+
+        if await self.get_preference(key) is not None:
+            return False
+
+        cur = await self.db.execute(
+            """
+            SELECT created_at FROM profile_versions
+             WHERE version = ? AND body = ? AND kind = 'stated'
+               AND approved_at IS NOT NULL
+               AND (SELECT COUNT(*) FROM profile_versions) = 1
+            """,
+            (version, body),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return False
+
+        await self._write_seed_marker(key, path, row["created_at"])
+        await self.db.commit()
+        return True
 
     async def create_profile_version(
         self, body: str, kind: str, approved: bool, distill_version: str | None = None
