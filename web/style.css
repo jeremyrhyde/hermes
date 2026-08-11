@@ -276,6 +276,17 @@ main {
 .banner ul { margin: var(--space-2) 0 0; padding-left: var(--space-4); }
 .banner li { font-size: 0.875rem; color: var(--color-text-dim); }
 
+/* Something that has not started but was not supposed to have — scoring with
+   no profile yet. Deliberately not red: the danger tint is what made a fresh
+   install's first screen look broken. Same layout so the two read as one list
+   when both are present, different weight so only one of them alarms. */
+.banner.advisory {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+}
+
+.banner.advisory .icon { color: var(--color-text-dim); }
+
 /* --------------------------------------------------------------- cards */
 
 .card-grid {
@@ -570,3 +581,89 @@ main {
 }
 
 .setting-help strong { color: var(--color-text); font-weight: 600; }
+
+/* A settings block built around a textarea rather than a slider. Wider than
+   .setting's 32rem because a taste profile is prose and reads badly in a
+   column narrow enough to make a slider comfortable. */
+.setting-block { max-width: 44rem; }
+
+.setting-block .section-title { margin-bottom: var(--space-3); }
+
+.profile-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+/* The version is an identifier, not a heading — it inherits .section-title's
+   uppercase and tracking otherwise, which makes "profile-v2 · distilled" hard
+   to read back against what the API returned. */
+.profile-version {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--color-text-dim);
+}
+
+.text-area {
+  display: block;
+  width: 100%;
+  min-height: 12rem;
+  padding: var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  /* Not a relative unit, and not below 16px: iOS Safari zooms the whole page
+     when a focused field's text is smaller, and this is a phone-first UI. */
+  font-size: 16px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.text-area:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-color: var(--color-accent);
+}
+
+/* Help on the left, the button on the right, wrapping to two rows when the
+   phone is too narrow for both. */
+.setting-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-3);
+}
+
+.setting-actions .setting-help { margin: 0; flex: 1 1 14rem; }
+
+.setting-actions-end { justify-content: flex-end; }
+
+.review-panel { margin: 0; }
+
+/* The whole row is the target, not the 20px box: a checkbox alone is well
+   under the 44px minimum every other control here honours. */
+.review-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--tap-min);
+  margin-top: var(--space-3);
+  font-size: 0.9375rem;
+  cursor: pointer;
+}
+
+.review-check input {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}

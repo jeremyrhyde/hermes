@@ -94,6 +94,7 @@ async def _seed_profile_from_file(
     except OSError as exc:
         failures.append({
             "component": "profile",
+            "severity": "error",
             "error": f"could not read {path}: {type(exc).__name__}: {exc}",
         })
         logger.exception("main: could not read taste profile %s", path)
@@ -102,6 +103,7 @@ async def _seed_profile_from_file(
     if not body.strip():
         failures.append({
             "component": "profile",
+            "severity": "error",
             "error": f"{path} is empty; a blank profile would score every "
                      f"article against nothing",
         })
@@ -141,6 +143,7 @@ async def _seed_profile_from_file(
     if seeded is not None and seeded != body:
         failures.append({
             "component": "profile",
+            "severity": "error",
             "error": (
                 f"{path} differs from {PROFILE_VERSION}, which was seeded from "
                 f"it and is what scoring uses. Seeding never overwrites, so the "
@@ -173,7 +176,19 @@ async def _build_components(
 
     Returns the components, the category vocabulary and filter list read from
     the sources config, plus a list of startup failures for ``/health``.
-    A failure dict has the shape ``{"component": str, "error": str}``.
+    A failure dict has the shape
+    ``{"component": str, "error": str, "severity": "error" | "advisory"}``.
+
+    ``severity`` exists because not every entry here is a failure. "Scoring is
+    waiting for a taste profile" is the normal state of a fresh install — the
+    reader has not written or approved one yet — and the UI renders this list
+    under a headline read before any of the entries. Counting that one as a
+    failure put "1 component(s) failed to start" in a red alert directly above
+    text explaining that nothing is wrong and no restart is needed. Anything
+    that genuinely did not come online is ``"error"``; anything merely waiting
+    on the reader is ``"advisory"``. A consumer that predates the field should
+    treat a missing ``severity`` as ``"error"``, which is what every other
+    entry is.
 
     A component that fails to construct is appended to ``failures`` and logged
     rather than raised — the server stays up and an operator sees exactly what
@@ -223,6 +238,7 @@ async def _build_components(
     except CategoryConfigError as exc:
         failures.append({
             "component": "categories_config",
+            "severity": "error",
             "error": f"invalid categories block in "
                      f"{settings.SOURCES_CONFIG_PATH}: {exc}",
         })
@@ -241,6 +257,7 @@ async def _build_components(
     except Exception as exc:
         failures.append({
             "component": "sources_config",
+            "severity": "error",
             "error": f"could not load {settings.SOURCES_CONFIG_PATH}: "
                      f"{type(exc).__name__}: {exc}",
         })
@@ -268,6 +285,7 @@ async def _build_components(
     if not settings.ANTHROPIC_API_KEY:
         failures.append({
             "component": "summarizer",
+            "severity": "error",
             "error": "ANTHROPIC_API_KEY is not set; polling is disabled, so "
                      "nothing is ingested or summarized",
         })
@@ -335,6 +353,7 @@ async def _build_components(
     if client is None:
         failures.append({
             "component": "scorer",
+            "severity": "error",
             "error": (
                 "scoring is disabled: ANTHROPIC_API_KEY is not set. The poller "
                 "is disabled too, so nothing is ingested."
@@ -350,6 +369,10 @@ async def _build_components(
         # the reader may simply not have approved anything yet.
         failures.append({
             "component": "scorer",
+            # Advisory, not a failure: this is where a fresh install starts, and
+            # writing a profile in Settings is the whole remedy. See the note on
+            # `severity` in _build_components' docstring.
+            "severity": "advisory",
             "error": (
                 f"scoring is waiting for a taste profile: none is loaded from "
                 f"{settings.PROFILE_PATH} and none has been approved. Articles "
@@ -435,7 +458,11 @@ def _make_lifespan(settings: Settings):
             app.state.distiller = distiller
             app.state.startup_failures = failures
 
-            logger.info("main: ready — %d startup failure(s)", len(failures))
+            errors = [f for f in failures if f.get("severity", "error") == "error"]
+            logger.info(
+                "main: ready — %d startup failure(s), %d advisory note(s)",
+                len(errors), len(failures) - len(errors),
+            )
             await bus.publish(
                 Event(
                     type=EventType.SYSTEM_READY,

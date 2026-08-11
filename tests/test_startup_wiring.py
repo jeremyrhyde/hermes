@@ -121,3 +121,57 @@ async def test_a_key_and_a_profile_report_nothing(built) -> None:
 
     assert _wired_scorer(poller) is not None
     assert _scorer_failure(failures) is None
+
+
+@pytest.mark.parametrize("built", [("sk-fake", None)], indirect=True)
+async def test_waiting_for_a_profile_is_advisory_not_a_failure(built) -> None:
+    """The one entry that is not a failure has to say so in the payload.
+
+    /health's list is rendered under a headline that is read before any of the
+    entries, and counting this one made a fresh install's first screen say "1
+    component(s) failed to start" directly above text explaining that nothing
+    is wrong and no restart is needed. `severity` is what lets the UI count and
+    colour the two kinds apart.
+    """
+    _store, _poller, failures = built
+
+    entry = _scorer_failure(failures)
+    assert entry is not None
+    assert entry["severity"] == "advisory"
+    assert [f for f in failures if f.get("severity", "error") == "error"] == [], (
+        "a key and no profile yet is the normal fresh-install state; nothing "
+        "about it failed to start"
+    )
+
+
+@pytest.mark.parametrize("built", [("", None)], indirect=True)
+async def test_things_that_really_did_not_start_are_errors(built) -> None:
+    """And the ones that are failures must not be downgraded with it."""
+    _store, _poller, failures = built
+
+    assert {f["component"] for f in failures} == {"summarizer", "scorer"}
+    assert [f["severity"] for f in failures] == ["error", "error"]
+
+
+async def test_every_failure_entry_carries_a_severity(tmp_path: Path) -> None:
+    """No entry may omit the field, whatever produced it.
+
+    A missing `severity` reads as "error" downstream, which is the safe default
+    but silently mislabels anything advisory added later. Broad on purpose: it
+    covers the config and profile entries too, which the fixture above cannot
+    reach.
+    """
+    (tmp_path / "sources.yaml").write_text("sources: [", encoding="utf-8")
+    (tmp_path / "profile.md").write_text("   ", encoding="utf-8")
+    settings = Settings(
+        DB_PATH=str(tmp_path / "test.db"),
+        SOURCES_CONFIG_PATH=str(tmp_path / "sources.yaml"),
+        PROFILE_PATH=str(tmp_path / "profile.md"),
+        ANTHROPIC_API_KEY="",
+        POLL_TICK_SECONDS=3600.0,
+    )
+    async for _store, _poller, failures in _build(settings):
+        assert {"profile", "sources_config", "summarizer", "scorer"} <= {
+            f["component"] for f in failures
+        }
+        assert all(f["severity"] in {"error", "advisory"} for f in failures), failures

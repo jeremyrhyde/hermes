@@ -39,14 +39,56 @@ function app() {
     // holds the in-between value so the number beside the label still moves
     // with your thumb. Re-synced from the server on every load, so a rejected
     // or superseded drag cannot leave it lying.
-    knobDraft: { score_cutoff: 0, max_displayed: 50 },
+    knobDraft: { score_cutoff: 0, max_displayed: 50, distill_threshold: 20 },
     // Preference key -> the field /ranked/ reports it under. The cutoff has two
     // spellings across the two endpoints — `score_cutoff` is a preferences key
     // among others, `cutoff` is unambiguous inside a ranking — and this is the
     // one place they meet. Reading `gating[key]` directly instead yields
     // `undefined`, which as an input value clears the box rather than
     // reverting it.
+    //
+    // `distill_threshold` is deliberately absent: it gates a review cadence, not
+    // a ranking, so /ranked/ has nothing to say about it and `prefs` below is
+    // where its effective value is read back from. See _effective.
     _knobField: { score_cutoff: 'cutoff', max_displayed: 'max_displayed' },
+    // The knobs /ranked/ does not report. Seeded with the server's own default
+    // so the slider renders somewhere sensible before Settings is ever opened.
+    prefs: { distill_threshold: 20 },
+    // The live profile, in the shape GET /profile/ returns for "there is none":
+    // an absent profile is where a reader starts, not an error, and `version`
+    // being null is what the label reads off.
+    profile: { version: null, body: '', kind: null },
+    // GET /profile/review, normalized. `state` is one of insufficient | ready |
+    // pending and drives three mutually exclusive panels — see reviewPanel for
+    // why it is never read raw. `proposal` is null in two of those three states,
+    // which is why nothing interpolates it directly.
+    review: { state: 'insufficient', count: 0, threshold: 20, proposal: null },
+    // What the two textareas were last *filled* with, as opposed to what the
+    // server last said. They are separate state because `:value` is not the
+    // "only writes when the rendered string changes" guard it looks like:
+    // Alpine re-runs a bind whenever any dependency of the expression changes,
+    // and refetching replaces `profile` and `review` wholesale, so binding
+    // straight to `profile.body` re-wrote the element on every poll and threw
+    // away whatever was half-typed in it. These move only when a *different*
+    // profile or proposal arrives — a new version — which is the one time
+    // refilling the box is what the reader wants.
+    profileSeed: '',
+    proposalSeed: '',
+    // Whether an approval should also clear existing scores. Default on: the
+    // point of approving a revised profile is usually to have it applied to
+    // what you are already looking at.
+    rescore: true,
+    // In-flight flags, one per slow action, so each button can disable and
+    // relabel itself without a second element flickering in beside it.
+    generating: false,
+    savingProfile: false,
+    resolving: false,
+    // Server-side rejections and confirmations, kept apart from knobError so a
+    // failed save cannot blank the message about a knob and vice versa.
+    profileError: '',
+    profileNotice: '',
+    reviewError: '',
+    reviewNotice: '',
     // The Saved list. Loaded on first switch to the tab, not at init — most
     // sessions never open it.
     savedItems: [],
@@ -173,7 +215,11 @@ function app() {
         // where the thumb was let go rather than where the gate ended up — and
         // the slider itself would snap back via :value while its own label
         // disagreed, which is worse than either being wrong alone.
+        // Spread rather than replace: distill_threshold is a draft too, and
+        // /ranked/ knows nothing about it. Rebuilding the object from these two
+        // keys alone would leave its label reading "undefined ratings".
         this.knobDraft = {
+          ...this.knobDraft,
           score_cutoff: this.gating.cutoff,
           max_displayed: this.gating.max_displayed,
         };
@@ -189,6 +235,83 @@ function app() {
         this.hasAnySaved = (anySaved.value || []).length > 0;
       } else if (anySaved) {
         console.error('refreshFiltered: /saved/', anySaved.reason);
+      }
+    },
+
+    /* Everything the Settings tab's lower half draws: the knobs /ranked/ does
+     * not report, the live profile, and where the review loop stands.
+     *
+     * Reads _filterSeq without bumping it, the same way _refreshCounts does.
+     * Bumping would cancel an in-flight refreshFiltered — the two run side by
+     * side on a tab switch — while *capturing* it is what makes a knob write or
+     * a tab switch mid-flight discard this paint. That is the whole point of the
+     * guard here: generating a proposal is a slow request, and this is the call
+     * that lands after it.
+     *
+     * Every response is folded into its state in a single assignment. Three
+     * mutually exclusive panels hang off `review.state`, and an intervening
+     * write that left all three false — even for one frame — would leave the
+     * one that came back permanently hidden. See the note in refreshFiltered on
+     * why Alpine cannot recover from that.
+     *
+     * Notices are deliberately untouched: this runs immediately after an
+     * approve or a save, and clearing them here would wipe the confirmation
+     * before it was read. */
+    async refreshProfile() {
+      const seq = this._filterSeq;
+      const [prefs, profile, review] = await Promise.allSettled([
+        this._json('/preferences/'),
+        this._json('/profile/'),
+        this._json('/profile/review'),
+      ]);
+      if (seq !== this._filterSeq) return;  // superseded — a knob moved, or a tab
+
+      if (prefs.status === 'fulfilled') {
+        const threshold = prefs.value?.distill_threshold;
+        if (Number.isInteger(threshold)) {
+          this.prefs = { distill_threshold: threshold };
+          // Re-anchor the label to what the server applied, for the reason
+          // refreshFiltered re-anchors the other two.
+          this.knobDraft = { ...this.knobDraft, distill_threshold: threshold };
+        }
+      } else {
+        console.error('refreshProfile: /preferences/', prefs.reason);
+      }
+
+      if (profile.status === 'fulfilled') {
+        const p = profile.value || {};
+        const next = {
+          version: p.version ?? null,
+          body: p.body ?? '',
+          kind: p.kind ?? null,
+        };
+        // Refill the box only when a different version arrived. Comparing the
+        // *version* rather than the body is what makes a poll mid-sentence
+        // harmless: re-seeding with identical text is still a write, and a
+        // write is what discards the edit.
+        if (next.version !== this.profile.version) this.profileSeed = next.body;
+        this.profile = next;
+      } else {
+        console.error('refreshProfile: /profile/', profile.reason);
+      }
+
+      if (review.status === 'fulfilled') {
+        const r = review.value || {};
+        const next = {
+          state: r.state ?? 'insufficient',
+          count: r.count ?? 0,
+          threshold: r.threshold ?? this.prefs.distill_threshold,
+          proposal: r.proposal ?? null,
+        };
+        // Same rule for the proposal, which is edited in place the same way.
+        // `?? null` on both sides: a proposal appearing or being resolved is a
+        // version change too, and undefined would compare unequal to itself.
+        if ((next.proposal?.version ?? null) !== (this.review.proposal?.version ?? null)) {
+          this.proposalSeed = next.proposal?.body ?? '';
+        }
+        this.review = next;
+      } else {
+        console.error('refreshProfile: /profile/review', review.reason);
       }
     },
 
@@ -238,6 +361,79 @@ function app() {
       return rows;
     },
 
+    /* The boot report, split by severity and pre-shaped into banners.
+     *
+     * Two groups rather than two copies of the banner markup, and rendered from
+     * one x-for for the reason the card template is shared: the copy that gets
+     * forgotten is the second one.
+     *
+     * A missing `severity` counts as an error. Every entry the server has ever
+     * written except the profile advisory is a real failure, so that is the safe
+     * reading of a payload from a server that predates the field. */
+    get bootGroups() {
+      const advisory = [];
+      const errors = [];
+      for (const f of this.bootFailures) {
+        ((f?.severity === 'advisory') ? advisory : errors).push(f);
+      }
+      const groups = [];
+      if (errors.length > 0) {
+        groups.push({
+          key: 'error',
+          advisory: false,
+          role: 'alert',
+          headline: `${errors.length} component(s) failed to start`,
+          entries: errors,
+        });
+      }
+      if (advisory.length > 0) {
+        groups.push({
+          key: 'advisory',
+          advisory: true,
+          role: 'status',
+          headline: advisory.length === 1
+            ? '1 component is waiting, not broken'
+            : `${advisory.length} components are waiting, not broken`,
+          entries: advisory,
+        });
+      }
+      return groups;
+    },
+
+    /* Which of the three review panels is on screen.
+     *
+     * Normalized rather than read off `review.state` in three templates, and
+     * that is not tidiness: an unrecognized state — a key the server stopped
+     * sending, a response that failed to parse — would make all three
+     * expressions false at once, and an x-show that goes false and true again
+     * inside one animation frame stays hidden forever (see refreshFiltered).
+     * Falling back to `insufficient` guarantees exactly one panel is true on
+     * every evaluation, so the panels can only ever swap, never all blank. */
+    get reviewPanel() {
+      const state = this.review.state;
+      return (state === 'ready' || state === 'pending') ? state : 'insufficient';
+    },
+
+    /* The proposal's version, blank when there is no proposal.
+     *
+     * `proposal` is null in two of the three states, and x-show evaluates a
+     * hidden panel's bindings too — so `review.proposal.version` in the
+     * template would throw on every render outside `pending`, not merely
+     * render badly. */
+    get proposalVersion() {
+      return this.review.proposal?.version ?? '';
+    },
+
+    /* The live profile's version, as a label. Reads "none yet" rather than
+     * blank when there is none: an empty slot beside a heading looks like
+     * something failed to load. */
+    get profileLabel() {
+      if (!this.profile.version) return 'none yet';
+      return this.profile.kind
+        ? `${this.profile.version} · ${this.profile.kind}`
+        : this.profile.version;
+    },
+
     // ---------------------------------------------------------------- helpers
     async _json(path, opts = {}) {
       const res = await fetch(path, opts);
@@ -247,6 +443,11 @@ function app() {
         // duplicating its ranges client-side, where the two would drift.
         const body = await res.json().catch(() => null);
         err.detail = body?.detail ?? null;
+        // The code itself, not just its text in the message. A 409 on generating
+        // a proposal is recoverable by refetching where the others are not, and
+        // parsing that back out of `${path} ${status}` would be a second, worse
+        // copy of what the response already said.
+        err.status = res.status;
         throw err;
       }
       // 204 No Content has no body
@@ -310,9 +511,17 @@ function app() {
       // keeps them out of the x-show flap entirely: with no await between the
       // flip and the paint, nothing can evaluate false and then true inside one
       // frame, which is the shape that leaves an element hidden forever.
-      if (name === 'sources' || name === 'settings') {
+      if (name === 'sources') {
         this.tab = name;
         return;
+      }
+      // Settings flips first and loads after, which is safe here where it was
+      // not for the lists: nothing in the panel is shown by "the data arrived"
+      // — reviewPanel always names exactly one of three, before and after — so
+      // there is no expression that can go false and then true again.
+      if (name === 'settings') {
+        this.tab = name;
+        return this.refreshProfile();
       }
       // refreshFiltered flips the tab once the list is in hand; see its note on
       // why the two cannot be separated.
@@ -379,7 +588,7 @@ function app() {
      * three groups every article lands in, and re-deriving that client-side is
      * the same duplicated gate the refetch exists to avoid. */
     async setKnob(key, el) {
-      const effective = this.gating[this._knobField[key]];
+      const effective = this._effective(key);
       const raw = el.value.trim();
       const value = Number(raw);
       this.knobError = '';
@@ -410,10 +619,220 @@ function app() {
         // leave the box showing a number the gate rows below it disagree with.
         // Alpine cannot correct that afterwards: `:value` only writes to the
         // DOM when its expression changes, and the expression did not.
-        el.value = this.gating[this._knobField[key]];
+        el.value = this._effective(key);
         return;
       }
+      // The threshold changes nothing about the ranking and everything about
+      // the review panel — the same count can be short of one threshold and
+      // past the next — so it repaints the panel rather than the feed.
+      if (key === 'distill_threshold') return this.refreshProfile();
       return this.refreshFiltered();
+    },
+
+    /* What the server currently has in effect for a knob.
+     *
+     * Two sources because the two gating knobs are read back from /ranked/,
+     * which reports the gate it actually applied, while the review cadence has
+     * no place in a ranking and comes from /preferences/. Reading the wrong one
+     * yields `undefined`, which as an input value clears the control rather
+     * than reverting it. */
+    _effective(key) {
+      const field = this._knobField[key];
+      return field ? this.gating[field] : this.prefs[key];
+    },
+
+    /* Replace the taste profile with whatever is in the textarea.
+     *
+     * *el* is the element, not its value, because the textarea is deliberately
+     * uncontrolled: `:value` writes to the DOM only when the bound expression
+     * changes, so a background refetch that returns the same body leaves what
+     * the reader is typing alone. x-model would bind the other way and a poll
+     * mid-sentence would discard the sentence.
+     *
+     * Blank is rejected here as well as by the server. The server's 400 is the
+     * real guard; this one exists so the answer arrives before the round trip
+     * and reads as a sentence rather than an API detail. */
+    async saveProfile(el) {
+      const body = el.value;
+      this.profileError = '';
+      this.profileNotice = '';
+      if (!body.trim()) {
+        this.profileError = 'A profile cannot be empty — scoring would judge '
+          + 'every article against nothing.';
+        return;
+      }
+      // Everything in flight described the profile this is replacing, exactly
+      // as in setKnob: a review panel resolving after this write would describe
+      // a proposal against the old text.
+      this._filterSeq++;
+      const seq = this._filterSeq;
+      this.savingProfile = true;
+      let version;
+      try {
+        const res = await this._json('/profile/', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body }),
+        });
+        version = res?.version;
+      } catch (err) {
+        console.error('saveProfile', err);
+        this.savingProfile = false;
+        if (seq !== this._filterSeq) return;
+        this.profileError = err.detail || 'Could not save the profile.';
+        return;
+      }
+      this.savingProfile = false;
+      if (seq !== this._filterSeq) return;
+      // "On the next poll", not "now": the pipeline reads the live profile once
+      // per source per run, so nothing already on screen re-ranks until then.
+      // Leaving that out is how a reader saves, sees identical scores, and
+      // concludes the edit did not take.
+      this.profileNotice = version
+        ? `Saved as ${version}. Scoring uses it from each source's next poll — `
+          + 'scores already on screen do not move until then.'
+        : 'Saved.';
+      return this.refreshProfile();
+    },
+
+    /* Ask the distiller for a revised profile. Slow — a model call over the
+     * whole rated corpus — which is what makes the seq guard load-bearing
+     * rather than defensive: a knob change or a tab switch while this is out
+     * must not paint a panel describing the state it left.
+     *
+     * A 409 now means two things: a proposal already existed, or one appeared
+     * while this request was waiting on the model. Both carry the same detail,
+     * so this does not claim to know which — it refetches and says the panel is
+     * current, which is true either way. */
+    async generateProposal() {
+      const seq = this._filterSeq;
+      this.reviewError = '';
+      this.reviewNotice = '';
+      this.generating = true;
+      let conflict = false;
+      try {
+        await this._json('/profile/review', { method: 'POST' });
+      } catch (err) {
+        console.error('generateProposal', err);
+        // Cleared before the guard, and on every path: this flag is the
+        // button's own progress, not painted state. Leaving it set on a
+        // superseded response would disable the button for the rest of the
+        // session.
+        this.generating = false;
+        if (seq !== this._filterSeq) return;
+        if (err.status !== 409) {
+          this.reviewError = err.detail || 'Could not propose a profile.';
+          return;
+        }
+        conflict = true;
+      }
+      this.generating = false;
+      if (seq !== this._filterSeq) return;
+      if (conflict) {
+        this.reviewError = 'A proposal was already waiting — the panel below '
+          + 'is up to date.';
+      }
+      return this.refreshProfile();
+    },
+
+    /* Approve the proposal, sending whatever is in the box.
+     *
+     * The body always goes with it rather than only when edited: the server
+     * treats a supplied body as the amendment and an absent one as "as
+     * proposed", and deciding which by comparing strings here would turn a
+     * trailing newline into a different profile. */
+    async approveProposal(el) {
+      const version = this.proposalVersion;
+      if (!version) return;
+      const body = el.value;
+      this.reviewError = '';
+      this.reviewNotice = '';
+      if (!body.trim()) {
+        this.reviewError = 'A profile cannot be empty — clear the edit or '
+          + 'reject the proposal instead.';
+        return;
+      }
+      const rescore = this.rescore;
+      const result = await this._resolve(
+        `/profile/review/${encodeURIComponent(version)}/approve`,
+        { body, rescore },
+        'Could not approve the proposal.',
+      );
+      if (result === undefined) return;
+
+      // "Queued for re-scoring", never "pending": `rescored` counts the
+      // articles whose existing score was cleared, and an article still waiting
+      // on its first score is not among them. Calling it a pending count would
+      // name a larger set than the one that moved.
+      let notice = `Approved as ${version}. Scoring uses it from each source's `
+        + 'next poll — scores already on screen do not move until then.';
+      if (rescore && result?.rescored > 0) {
+        notice += ` ${result.rescored} article(s) queued for re-scoring; the `
+          + 'pipeline works through 50 per source per poll, so the feed ranks '
+          + 'old and new scores against each other until it catches up.';
+      } else if (rescore) {
+        notice += ' Nothing had a score to clear.';
+      }
+      this.reviewNotice = notice;
+      return this.refreshProfile();
+    },
+
+    /* Discard the proposal. The live profile is untouched — and the rating
+     * count still restarts, which the message says so the reader is not left
+     * expecting the same proposal back on the next rating. */
+    async rejectProposal() {
+      const version = this.proposalVersion;
+      if (!version) return;
+      this.reviewError = '';
+      this.reviewNotice = '';
+      const result = await this._resolve(
+        `/profile/review/${encodeURIComponent(version)}/reject`,
+        null,
+        'Could not reject the proposal.',
+      );
+      if (result === undefined) return;
+      this.reviewNotice = 'Proposal discarded. Your profile is unchanged, and '
+        + 'the rating count starts again from here.';
+      return this.refreshProfile();
+    },
+
+    /* Approve and reject differ only in their payload and their message, so the
+     * seq guard, the stale-panel 409 and the error wording live once.
+     *
+     * Returns the parsed body on success and `undefined` on every path that
+     * already handled itself — a superseded response, a failure, or a stale
+     * panel — which is what the callers branch on. `null` is a success: reject
+     * answers 204. */
+    async _resolve(path, payload, failureMessage) {
+      this._filterSeq++;
+      const seq = this._filterSeq;
+      this.resolving = true;
+      const opts = payload === null
+        ? { method: 'POST' }
+        : {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          };
+      try {
+        const result = await this._json(path, opts);
+        this.resolving = false;
+        if (seq !== this._filterSeq) return undefined;
+        return result;
+      } catch (err) {
+        console.error('resolve', path, err);
+        this.resolving = false;
+        if (seq !== this._filterSeq) return undefined;
+        if (err.status === 409) {
+          // Someone else — another tab, a double tap — already settled it.
+          this.reviewError = 'That proposal was already approved or rejected. '
+            + 'The panel below is now current.';
+          this.refreshProfile();
+          return undefined;
+        }
+        this.reviewError = err.detail || failureMessage;
+        return undefined;
+      }
     },
 
     toggle(item) {
@@ -555,8 +974,14 @@ function app() {
           console.warn('pipeline_error', event.data);
           break;
 
-        case 'article_ingested':
         case 'profile_proposed':
+          // Only while the panel it describes is on screen. Elsewhere it would
+          // be three requests for state nothing is rendering, and the panel
+          // reloads on every switch to Settings anyway.
+          if (this.tab === 'settings') this.refreshProfile();
+          break;
+
+        case 'article_ingested':
           break;
 
         default:

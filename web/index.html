@@ -104,14 +104,20 @@
   </div>
 
   <main>
-    <!-- Startup-failure banner, populated from /health -->
-    <template x-if="bootFailures.length > 0">
-      <div class="banner" role="alert">
+    <!-- Boot report from /health, split by severity.
+         Not every entry is a failure: "scoring is waiting for a taste profile"
+         is where a fresh install starts, and counting it made a new reader's
+         first screen read "1 component(s) failed to start" in a red alert
+         directly above the text saying nothing is wrong. The headline is read
+         first, so it has to be true of the entries under it — hence two groups,
+         each with its own count, role and colour, and one copy of the markup. -->
+    <template x-for="group in bootGroups" :key="group.key">
+      <div class="banner" :class="{ advisory: group.advisory }" :role="group.role">
         <svg class="icon" aria-hidden="true"><use href="#icon-alert"/></svg>
         <div>
-          <strong x-text="`${bootFailures.length} component(s) failed to start`"></strong>
+          <strong x-text="group.headline"></strong>
           <ul>
-            <template x-for="f in bootFailures" :key="f.component">
+            <template x-for="(f, i) in group.entries" :key="i">
               <li><code x-text="f.component"></code> — <span x-text="f.error"></span></li>
             </template>
           </ul>
@@ -317,7 +323,118 @@
         </p>
       </div>
 
+      <!-- The cadence of the review loop, not of the gate — but it is a knob
+           and it belongs beside the other two, so the reader finds every
+           number they can turn in one place. -->
+      <div class="setting">
+        <label class="setting-label" for="knob-threshold">
+          Re-evaluate every
+          <output class="setting-value" for="knob-threshold"
+                  x-text="`${knobDraft.distill_threshold} ratings`"></output>
+        </label>
+        <input type="range" class="setting-range" id="knob-threshold"
+               min="5" max="200" step="1"
+               :value="prefs.distill_threshold"
+               @input="knobDraft.distill_threshold = Number($event.target.value)"
+               @change="setKnob('distill_threshold', $event.target)">
+        <p class="setting-help">
+          How many ratings to gather before Hermes offers to revise your taste
+          profile. Clearing a rating takes it back out of the count, so the
+          tally below can fall as well as rise.
+        </p>
+      </div>
+
       <p class="hint knob-error" role="status" x-show="knobError" x-text="knobError"></p>
+
+      <!-- ---------------------------------------------------------------- -->
+      <!-- Taste profile                                                    -->
+      <!-- ---------------------------------------------------------------- -->
+      <!-- The textarea is uncontrolled on purpose: x-model would bind the other
+           way and a poll mid-sentence would discard the sentence. Bound to
+           `profileSeed`, not `profile.body` — Alpine re-runs a bind whenever
+           any dependency of its expression changes, so refetching the same body
+           into a fresh object is still a write to the element, and a write is
+           what loses the edit. The seed moves only when a different version
+           arrives. -->
+      <div class="setting setting-block">
+        <h3 class="section-title profile-head">
+          <span>Taste profile</span>
+          <span class="profile-version" x-text="profileLabel"></span>
+        </h3>
+        <textarea class="text-area" id="profile-body" x-ref="profileBody"
+                  rows="12" spellcheck="false"
+                  aria-label="Taste profile"
+                  :value="profileSeed"></textarea>
+        <div class="setting-actions">
+          <p class="setting-help">
+            Saving appends a new version. Scoring picks it up at each source's
+            next poll — articles already scored keep the score they were given
+            until something re-scores them.
+          </p>
+          <button type="button" class="btn" :disabled="savingProfile"
+                  @click="saveProfile($refs.profileBody)"
+                  x-text="savingProfile ? 'Saving…' : 'Save'"></button>
+        </div>
+        <p class="hint knob-error" role="status" x-show="profileError" x-text="profileError"></p>
+        <p class="hint" role="status" x-show="profileNotice" x-text="profileNotice"></p>
+      </div>
+
+      <!-- ---------------------------------------------------------------- -->
+      <!-- Re-evaluation — three mutually exclusive panels                  -->
+      <!-- ---------------------------------------------------------------- -->
+      <!-- `reviewPanel` is normalized to exactly one of the three names on
+           every evaluation, which is what keeps these from all being false at
+           once: an x-show that goes false and true again inside one animation
+           frame stays hidden permanently (see refreshFiltered in app.js), so a
+           momentary all-false state would blank whichever panel came back. -->
+      <div class="setting setting-block">
+        <h3 class="section-title">Re-evaluation</h3>
+
+        <p class="setting-help review-panel" x-show="reviewPanel === 'insufficient'"
+           x-text="`Not enough data for re-evaluation yet — ${review.count} of ${review.threshold} ratings.`"></p>
+
+        <div class="review-panel" x-show="reviewPanel === 'ready'">
+          <button type="button" class="btn" :disabled="generating"
+                  @click="generateProposal()"
+                  x-text="generating
+                          ? 'Reading your ratings…'
+                          : `Propose an updated profile from ${review.count} ratings`"></button>
+          <p class="setting-help">
+            This reads your rated articles and drafts a revision. Nothing goes
+            live until you approve it.
+          </p>
+        </div>
+
+        <div class="review-panel" x-show="reviewPanel === 'pending'">
+          <p class="setting-help">
+            Drafted from your ratings<span x-text="proposalVersion ? ` as ${proposalVersion}` : ''"></span>.
+            Edit it here if you like — approving saves whatever is in the box.
+          </p>
+          <textarea class="text-area" id="proposal-body" x-ref="proposalBody"
+                    rows="12" spellcheck="false"
+                    aria-label="Proposed taste profile"
+                    :value="proposalSeed"></textarea>
+          <label class="review-check" for="rescore">
+            <input type="checkbox" id="rescore" x-model="rescore">
+            <span>Re-score the articles that were scored under the old profile</span>
+          </label>
+          <p class="setting-help">
+            Re-scoring clears those scores so the pipeline can judge them again.
+            It works through 50 articles per source per poll, so for a while the
+            feed ranks old and new scores against each other.
+          </p>
+          <div class="setting-actions setting-actions-end">
+            <button type="button" class="btn btn-quiet" :disabled="resolving"
+                    @click="rejectProposal()">Reject</button>
+            <button type="button" class="btn" :disabled="resolving"
+                    @click="approveProposal($refs.proposalBody)"
+                    x-text="resolving ? 'Working…' : 'Approve'"></button>
+          </div>
+        </div>
+
+        <p class="hint knob-error" role="status" x-show="reviewError" x-text="reviewError"></p>
+        <p class="hint" role="status" x-show="reviewNotice" x-text="reviewNotice"></p>
+      </div>
     </section>
   </main>
 
