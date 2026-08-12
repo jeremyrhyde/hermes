@@ -325,7 +325,13 @@ def test_clearing_an_unrated_article_succeeds(client: TestClient) -> None:
 def test_rating_rejects_a_neutral_value(client: TestClient) -> None:
     res = client.put("/articles/1/rating", json={"value": 0})
     assert res.status_code == 400
-    assert "0" in res.json()["detail"]
+
+    # Both halves, and the value in context: a bare `"0" in detail` is
+    # satisfied by any message carrying a zero anywhere — including one naming
+    # the wrong value, since "invalid rating 10" contains a zero too.
+    detail = res.json()["detail"]
+    assert "invalid rating 0" in detail
+    assert "-1, 1" in detail, "the message must say what is valid, not only what is not"
 
 
 def test_rating_an_unknown_article_returns_404(client: TestClient) -> None:
