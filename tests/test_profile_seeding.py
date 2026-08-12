@@ -437,6 +437,74 @@ async def test_the_backfill_declines_when_the_row_is_not_alone(
     assert failures == []
 
 
+async def test_a_marker_in_the_first_shipped_format_can_still_be_adopted(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """The one unreadable marker we shipped must not be a permanent dead end.
+
+    A marker written before it carried a row identity is a bare path string,
+    which fails the parse and correctly disqualifies the row from a destructive
+    remedy. Declining to *re-mark* it as well would leave those installs silent
+    forever with nothing able to fix it, which is a worse upgrade path than the
+    one the marker replaced.
+    """
+    path = tmp_path / "profile.md"
+    path.write_text("original", encoding="utf-8")
+    await _seed_profile_from_file(store, str(path), [])
+    await store.set_preference(PROFILE_SEED_MARKER, str(path))  # pre-3f1740c format
+
+    await _seed_profile_from_file(store, str(path), [])  # boot: file still matches
+    path.write_text("edited", encoding="utf-8")
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, str(path), failures)
+
+    assert [f["component"] for f in failures] == ["profile"]
+
+
+async def test_an_unreadable_marker_is_survivable_and_silent(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """Anything can be written into a preference; none of it may crash a boot.
+
+    Nor may it warn. The marker is read to license a DELETE against the
+    reader's data, so a value that cannot be understood has to read as "not
+    ours" rather than raise or be waved through.
+    """
+    path = tmp_path / "profile.md"
+    path.write_text("original", encoding="utf-8")
+    await _seed_profile_from_file(store, str(path), [])
+    await store.set_preference(PROFILE_SEED_MARKER, "{not json at all")
+
+    path.write_text("edited", encoding="utf-8")
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, str(path), failures)
+
+    assert failures == []
+    assert (await store.latest_profile())[1] == "original"
+
+
+async def test_a_different_file_cannot_claim_another_file_s_seed(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """The row identity is half the marker; the file is the other half.
+
+    A second profile.md — a copy under another name, a path change in the
+    config — must not inherit the first one's seed. Every remedy is phrased as
+    "your file's edits are being ignored", and pointed at a row this file never
+    wrote it is simply false, with a DELETE attached.
+    """
+    seeded = tmp_path / "profile.md"
+    seeded.write_text("original", encoding="utf-8")
+    await _seed_profile_from_file(store, str(seeded), [])
+
+    other = tmp_path / "elsewhere.md"
+    other.write_text("a different file entirely", encoding="utf-8")
+    failures: list[dict] = []
+    await _seed_profile_from_file(store, str(other), failures)
+
+    assert failures == []
+
+
 async def test_reaching_the_same_file_by_another_path_still_reports(
     store: StateStore, tmp_path: Path, monkeypatch
 ) -> None:

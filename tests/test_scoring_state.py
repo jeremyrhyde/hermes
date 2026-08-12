@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from core.state import StateStore
 from schemas.article import ArticleRef, Summary
 from schemas.scoring import Score
@@ -162,6 +164,44 @@ async def test_seeding_reports_whether_it_inserted(store: StateStore) -> None:
     """
     assert await store.seed_profile("profile-v1", "body") is True
     assert await store.seed_profile("profile-v1", "body") is False
+
+
+async def test_a_failed_marker_write_takes_the_seeded_row_with_it(
+    store: StateStore, monkeypatch
+) -> None:
+    """A seeded row that outlives its marker is the state to avoid.
+
+    The connection is shared, so an abandoned INSERT is not discarded — it sits
+    pending until whatever commits next adopts it. The install would then hold
+    a profile that came from a file with nothing recording that it did, and no
+    later boot could tell, since the row is indistinguishable from one the
+    reader typed. Either both land or neither does.
+    """
+    async def boom(*_args, **_kwargs) -> None:
+        raise RuntimeError("no space left on device")
+
+    monkeypatch.setattr(store, "_write_seed_marker", boom)
+    with pytest.raises(RuntimeError):
+        await store.seed_profile("profile-v1", "body", "seed_marker", "/p/profile.md")
+
+    await store.set_preference("something_else", "committed later")
+
+    assert await store.latest_profile() is None, "the abandoned row must not land"
+
+
+async def test_a_half_specified_marker_is_a_programming_error(
+    store: StateStore,
+) -> None:
+    """Silently seeding unmarked is the one outcome that must not be reachable.
+
+    A key without a path is a caller mistake with no sensible reading, and the
+    tempting one — skip the marker, keep the row — reproduces the bug this
+    whole mechanism exists to prevent, in a form no later boot can detect.
+    """
+    with pytest.raises(AssertionError):
+        await store.seed_profile("profile-v1", "body", marker_key="seed_marker")
+
+    assert await store.latest_profile() is None
 
 
 async def test_latest_profile_is_none_when_unseeded(store: StateStore) -> None:

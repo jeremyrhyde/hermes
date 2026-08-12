@@ -135,9 +135,15 @@ async def _seed_profile_from_file(
     inserted = await store.seed_profile(PROFILE_VERSION, body, PROFILE_SEED_MARKER,
                                         resolved)
 
-    # Nothing approved and still nothing inserted means the seed's name is held
-    # by a row that was never in effect — a distillation the reader rejected,
-    # or one still pending. Reachable with no profile.md ever present, since the
+    # Nothing inserted while the name is taken and nothing is approved: the
+    # seed's name is held by a row that was never in effect — a distillation
+    # the reader rejected, or one still pending. The held name is asked about
+    # rather than inferred from the other two. Deducing it works today only
+    # because seed_profile's decline and latest_profile's filter test the same
+    # approved_at predicate, and this very task began by tightening one of
+    # them; the next change to either would turn this entry into a confident
+    # lie without touching a line of it.
+    # Reachable with no profile.md ever present, since the
     # distiller proposes against an empty profile, and then invisible: the file
     # is readable, non-empty, and permanently inert. The only other thing
     # /health would say is that no profile is loaded from this path, which
@@ -145,7 +151,11 @@ async def _seed_profile_from_file(
     # sitting right there. Not phrased as a DELETE — the row is the record of
     # what was proposed and refused, and pasting the text into Settings adopts
     # the file without destroying anything.
-    if not inserted and await store.latest_profile() is None:
+    if (
+        not inserted
+        and await store.latest_profile() is None
+        and await store.profile_body(PROFILE_VERSION) is not None
+    ):
         failures.append({
             "component": "profile",
             "severity": "error",

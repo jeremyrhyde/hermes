@@ -827,8 +827,13 @@ class StateStore:
         *marker_path* records it, in this method rather than after it because
         it must share the insert's transaction: a crash in between would leave
         a seeded install permanently unmarked, and unmarkable, since the
-        evidence is gone by the next boot.
+        evidence is gone by the next boot. The two are asserted to arrive
+        together — one without the other silently produces exactly that
+        unmarked install, which is the failure this pairing exists to prevent.
         """
+
+        assert (marker_key is None) == (marker_path is None), \
+            "a seed marker needs both a key and a path"
 
         now = iso(utcnow())
         cur = await self.db.execute(
@@ -843,9 +848,21 @@ class StateStore:
             (version, body, now, now),
         )
         inserted = cur.rowcount == 1
-        if inserted and marker_key is not None and marker_path is not None:
-            await self._write_seed_marker(marker_key, marker_path, now)
-        await self.db.commit()
+        try:
+            if inserted and marker_key is not None:
+                await self._write_seed_marker(marker_key, marker_path, now)
+            await self.db.commit()
+        except Exception:
+            # The transaction is the whole point, and nothing else here would
+            # end it: an exception between the INSERT and the commit leaves the
+            # row pending on a connection every other caller shares, so the next
+            # commit from anywhere makes it durable and unmarked — precisely the
+            # state this pairing exists to rule out. The caller's exception
+            # handling is not a substitute; today a raise here kills the boot,
+            # but the docstring above this call site invites turning profile
+            # problems into a degraded feature rather than a dead process.
+            await self.db.rollback()
+            raise
         return inserted
 
     async def _write_seed_marker(self, key: str, path: str, created_at: str) -> None:
@@ -861,6 +878,10 @@ class StateStore:
         vouch for text the reader typed. Timestamps are only unique enough for
         this because they are paired with the version name and compared against
         that one row.
+
+        The upsert is :meth:`set_preference`'s statement, duplicated because
+        this one must not commit. They are the only two writers of
+        ``preferences`` and have to change together.
         """
 
         await self.db.execute(
@@ -872,25 +893,44 @@ class StateStore:
             (key, json.dumps({"path": path, "created_at": created_at}), created_at),
         )
 
-    async def seed_marker_matches(self, key: str, path: str, version: str) -> bool:
-        """Whether *version* is still the row *path* seeded on this install.
+    async def _read_seed_marker(self, key: str) -> tuple[str, str] | None:
+        """The marked ``(path, created_at)``, or ``None`` if there isn't one.
 
-        False whenever the answer is not certain — no marker, a different file,
-        a marker written before the format existed, or a row whose timestamp
-        has moved. Every caller uses this to license a destructive instruction,
-        so an unreadable marker must read as "not ours", never as "close
-        enough".
+        ``None`` covers absent and unintelligible alike. A preference is a
+        free-form text value that anything can write, and the first shipped
+        version of this marker was a bare path with no row identity, so an
+        unparseable value is a state real installs are in rather than a
+        corruption. Callers may not distinguish "no marker" from "a marker I
+        cannot read": both mean nothing here is evidence about a row.
         """
 
         raw = await self.get_preference(key)
         if raw is None:
-            return False
+            return None
         try:
             marker = json.loads(raw)
-            marked_path = marker["path"]
-            created_at = marker["created_at"]
+            return (marker["path"], marker["created_at"])
         except (ValueError, TypeError, KeyError):
+            return None
+
+    async def seed_marker_matches(self, key: str, path: str, version: str) -> bool:
+        """Whether *version* is still the row *path* seeded on this install.
+
+        False whenever the answer is not certain — no marker, one that cannot
+        be read, a different file, or a row whose timestamp has moved. Every
+        caller uses this to license a destructive instruction, so anything
+        short of proof must read as "not ours", never as "close enough".
+
+        The path is compared, not just carried. A second ``profile.md`` — a
+        copy under another name, a changed setting — would otherwise inherit
+        the first one's seed and be told that its edits are being ignored,
+        which is false, with a DELETE attached.
+        """
+
+        marker = await self._read_seed_marker(key)
+        if marker is None:
             return False
+        marked_path, created_at = marker
         if marked_path != path:
             return False
 
@@ -909,20 +949,32 @@ class StateStore:
         profile came from a file, and nothing on the row can settle it later.
         One shape can be adopted anyway: a lone *version* row, stated, approved,
         and byte-identical to the file. Even if the reader wrote that text by
-        hand, marking it costs them nothing — the divergence warning only fires
-        once the file is edited, and the remedy then replaces their text with a
-        superset of itself, the file's own contents plus the edit.
+        hand, marking it costs little — the two bodies were identical at the
+        moment of marking, so the divergence the remedy later resolves can only
+        be an edit made to the file since, and the most it can cost the reader
+        is text they themselves removed from it. Not nothing: a reader who
+        exported their Settings profile to disk as a backup, and whose file is
+        later truncated by a bad save or reverted by a checkout, gets a remedy
+        offering to adopt the truncation. It is a warning they must read before
+        acting on, which is the same contract as every other entry in /health.
 
         Every clause is load-bearing, and the count most of all. A second row
         means this install has a history a plain seed cannot explain — the
         reader may have authored either row — and equal bodies prove nothing on
         their own, since the file can be written to match whatever it likes.
+        ``kind`` and approval are not reachable today, since ``main.py`` reports
+        and returns before this whenever nothing is approved; they are kept
+        against a caller that does not, and nothing tests them.
 
-        No-op when a marker already exists, so a backfill can never outlive or
-        override the row-scoped marker :meth:`seed_profile` writes.
+        No-op when a *readable* marker exists, so a backfill can never override
+        the row-scoped marker :meth:`seed_profile` writes. Readable rather than
+        present, because the first shipped marker was a bare path that no
+        longer parses: an install holding one is disqualified from the remedy
+        and would be disqualified from ever being re-marked too, silent
+        permanently with nothing able to repair it.
         """
 
-        if await self.get_preference(key) is not None:
+        if await self._read_seed_marker(key) is not None:
             return False
 
         cur = await self.db.execute(
