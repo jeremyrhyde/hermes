@@ -7,6 +7,7 @@ otherwise only be observable by running the server and reading /health.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from core.state import StateStore
@@ -107,12 +108,24 @@ async def test_an_approved_distillation_does_not_fake_a_divergence(
     path.write_text("stated taste", encoding="utf-8")
     await _seed_profile_from_file(store, str(path), [])
 
+    # Stamped one second after the row seeding just wrote, rather than at a
+    # fixed date. `latest_profile` orders by `approved_at`, and `seed_profile`
+    # stamps the real clock — so a hardcoded date silently stops being "later
+    # than the seed" the moment the wall clock passes it, and the assertion
+    # below flips to `profile-v1` with nothing about the test looking wrong.
+    cur = await store.db.execute(
+        "SELECT approved_at FROM profile_versions WHERE version = ?",
+        (PROFILE_VERSION,),
+    )
+    seeded_at = datetime.fromisoformat((await cur.fetchone())["approved_at"])
+    after_the_seed = (seeded_at + timedelta(seconds=1)).isoformat()
+
     await store.db.execute(
         """
         INSERT INTO profile_versions (version, body, kind, created_at, approved_at)
         VALUES ('profile-v2-distilled', 'learned taste', 'distilled', ?, ?)
         """,
-        ("2026-09-01T00:00:00+00:00", "2026-09-01T00:00:00+00:00"),
+        (after_the_seed, after_the_seed),
     )
     await store.db.commit()
 
