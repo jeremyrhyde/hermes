@@ -54,6 +54,62 @@ function app() {
     // The knobs /ranked/ does not report. Seeded with the server's own default
     // so the slider renders somewhere sensible before Settings is ever opened.
     prefs: { distill_threshold: 20 },
+    /* The three sliders in Settings, rendered by one x-for over this list.
+     *
+     * One descriptor per knob rather than three near-identical blocks of
+     * markup: with no component system the third block is a copy of the first
+     * two, and the copy is what stops getting updated. Everything that differs
+     * between them lives here — id, label, range, unit, help — so the template
+     * stays a straight render with no per-knob branch in it. Adding a fourth
+     * knob is a row here and nothing else.
+     *
+     * `unit` is always a string and is concatenated unconditionally; an empty
+     * one is what keeps the template free of a conditional. `help` is plain
+     * text because it is rendered with x-text — markup in it would be escaped
+     * and shown literally.
+     *
+     * The value in effect is read through _effective(), not from a field named
+     * here, because the two gating knobs come back from /ranked/ and the
+     * cadence from /preferences/. See _effective and _knobField.
+     *
+     * Kept in step with the markup in index.html's Settings panel — the loop
+     * there renders these keys and nothing else. */
+    knobs: [
+      {
+        key: 'score_cutoff',
+        id: 'knob-cutoff',
+        label: 'Score cutoff',
+        min: 0,
+        max: 100,
+        unit: '',
+        help: 'Articles scoring below this are withheld from the feed and '
+            + 'collapsed into a count. Leave it at 0, which shows everything, '
+            + 'until the scores look right.',
+      },
+      {
+        key: 'max_displayed',
+        id: 'knob-max',
+        label: 'Most articles shown',
+        min: 1,
+        max: 200,
+        unit: '',
+        help: 'A hard cap on the list, whatever the cutoff allows. Anything '
+            + 'past it is counted as overflow rather than dropped.',
+      },
+      {
+        // The cadence of the review loop, not of the gate — but it is a number
+        // you can turn, and they all belong in one place.
+        key: 'distill_threshold',
+        id: 'knob-threshold',
+        label: 'Re-evaluate every',
+        min: 5,
+        max: 200,
+        unit: ' ratings',
+        help: 'How many ratings to gather before Hermes offers to revise your '
+            + 'taste profile. Clearing a rating takes it back out of the '
+            + 'count, so the tally below can fall as well as rise.',
+      },
+    ],
     // The live profile, in the shape GET /profile/ returns for "there is none":
     // an absent profile is where a reader starts, not an error, and `version`
     // being null is what the label reads off.
@@ -74,6 +130,20 @@ function app() {
     // refilling the box is what the reader wants.
     profileSeed: '',
     proposalSeed: '',
+    // Whether GET /profile/ has answered at least once this session.
+    //
+    // The seed rule above protects every refetch *except* the first: `version`
+    // starts null, so the first real response always counts as a new version
+    // and always refills the box. Type into the empty textarea inside that
+    // window — it is open from the moment Settings is tapped — and the text is
+    // gone, which is the same bug as the one the seeds fixed, just narrowed to
+    // the one moment it is guaranteed rather than possible.
+    //
+    // Closed by disabling the field rather than by suppressing the refill: a
+    // genuinely new version must still win, because editing against a profile
+    // that is no longer live is worse than losing a few characters. Preventing
+    // the typing is the only fix that keeps both.
+    profileLoaded: false,
     // Whether an approval should also clear existing scores. Default off, like
     // the API's own: re-scoring is the most expensive thing this UI can ask for
     // — a model call per article — and a box already ticked when the panel
@@ -292,8 +362,20 @@ function app() {
         // write is what discards the edit.
         if (next.version !== this.profile.version) this.profileSeed = next.body;
         this.profile = next;
+        // The first response is the one refill that is guaranteed to happen:
+        // `version` starts null, so anything real differs from it. That is
+        // correct — the box has to be filled from somewhere — but it means the
+        // window before this line is the one moment typing is certain to be
+        // thrown away, which is why the textarea stays disabled until here
+        // rather than being made safe afterwards. See profileLoaded.
+        this.profileLoaded = true;
       } else {
         console.error('refreshProfile: /profile/', profile.reason);
+        // Unlocked on failure too. There is nothing to overwrite if the fetch
+        // never landed, and a box that stays disabled because the network
+        // blipped is a Settings tab the reader cannot use at all — a worse
+        // outcome than the edit this flag exists to protect.
+        this.profileLoaded = true;
       }
 
       if (review.status === 'fulfilled') {
@@ -512,6 +594,15 @@ function app() {
       // keeps them out of the x-show flap entirely: with no await between the
       // flip and the paint, nothing can evaluate false and then true inside one
       // frame, which is the shape that leaves an element hidden forever.
+      // Retire whatever is in flight. Both of these leave the tab they were on,
+      // so any response still coming describes a panel the reader is no longer
+      // looking at — and refreshProfile *captures* the sequence rather than
+      // bumping it, so without this two of them can be outstanding at once with
+      // the same generation and both allowed to paint. Reaching that needs a
+      // `profile_proposed` event immediately followed by a tap on Settings, and
+      // the two would paint the same three endpoints milliseconds apart today;
+      // it is a guard against them diverging later, not against a visible bug.
+      this._filterSeq++;
       if (name === 'sources') {
         this.tab = name;
         return;

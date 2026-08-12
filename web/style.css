@@ -51,11 +51,6 @@ body {
    never flash on load. */
 [x-cloak] { display: none !important; }
 
-/* Toggled by a class bind where x-show cannot be trusted — an element whose
-   value is cleared and re-set across an await lands both transitions in one
-   animation frame, and x-show's deferred hide then swallows its own show. See
-   the note above the first message paragraph in index.html. */
-.hidden { display: none; }
 
 .sr-only {
   position: absolute;
@@ -376,7 +371,28 @@ main {
 
 /* --------------------------------------------------------------- gating */
 
-.knob-error { color: var(--color-danger); text-transform: none; }
+/* A status line under a control: the server's rejection, or the confirmation
+   of what a write did. There are five of them across Settings and they all
+   behave the same way.
+
+   Hidden by being empty, with no binding of any kind. This is the third
+   mechanism these have had, and the reason for landing here is that the other
+   two were both a duplicated *behaviour* rather than duplicated markup. x-show
+   was actively broken: every one of these is written by a handler that clears
+   the message, awaits a request, then sets the new one, and over localhost both
+   transitions land in one animation frame — where x-show's hide (deferred
+   through queueMicrotask -> rAF -> a promise chain) swallows its own show (a
+   bare rAF) and leaves the paragraph display:none with the new text already in
+   it. A class bind fixed that but left five copies of the same visibility
+   expression to keep in step. An empty element has nothing to keep in step:
+   x-text writes '' and the rule below does the rest, so a sixth message needs
+   no visibility logic to get wrong.
+
+   Do not put static markup inside one of these — :empty is exactly as literal
+   as it sounds, and a stray whitespace-only child would pin it open. */
+.message:empty { display: none; }
+
+.message-error { color: var(--color-danger); text-transform: none; }
 
 /* The withheld groups. No hover, no cursor, no focus ring: nothing here is
    clickable in this phase, and affording otherwise would promise a disclosure
@@ -637,6 +653,10 @@ main {
   line-height: 1.6;
   resize: vertical;
 }
+
+/* Disabled only while the first GET /profile/ is in flight, so this reads as
+   "not ready yet" rather than "not for you". Matches .btn:disabled. */
+.text-area:disabled { opacity: 0.55; cursor: default; }
 
 .text-area:focus-visible {
   outline: 2px solid var(--color-accent);

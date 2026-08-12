@@ -290,75 +290,41 @@
            binding the write there would issue a PUT per pixel and a refetch
            per PUT. The number beside the label tracks the drag live off local
            state, so it still feels immediate. -->
-      <div class="setting">
-        <label class="setting-label" for="knob-cutoff">
-          Score cutoff
-          <output class="setting-value" for="knob-cutoff" x-text="knobDraft.score_cutoff"></output>
-        </label>
-        <input type="range" class="setting-range" id="knob-cutoff"
-               min="0" max="100" step="1"
-               :value="gating.cutoff"
-               @input="knobDraft.score_cutoff = Number($event.target.value)"
-               @change="setKnob('score_cutoff', $event.target)">
-        <p class="setting-help">
-          Articles scoring below this are withheld from the feed and collapsed
-          into a count. <strong>0</strong> shows everything, which is where to
-          leave it until the scores look right.
-        </p>
-      </div>
+      <!-- One block, three knobs. The descriptors are `knobs` in app.js, right
+           beside the rest of the knob plumbing; everything that differs between
+           the three lives there so this stays a straight render with no
+           per-knob branch. `_effective(k.key)` is the value the server has in
+           effect, which comes from /ranked/ for two of them and /preferences/
+           for the third — the one asymmetry the template must not know about.
+           Adding a fourth knob is a row in that list and nothing here. -->
+      <template x-for="k in knobs" :key="k.key">
+        <div class="setting">
+          <label class="setting-label" :for="k.id">
+            <span x-text="k.label"></span>
+            <output class="setting-value" :for="k.id"
+                    x-text="`${knobDraft[k.key]}${k.unit}`"></output>
+          </label>
+          <input type="range" class="setting-range" step="1"
+                 :id="k.id" :min="k.min" :max="k.max"
+                 :value="_effective(k.key)"
+                 @input="knobDraft[k.key] = Number($event.target.value)"
+                 @change="setKnob(k.key, $event.target)">
+          <p class="setting-help" x-text="k.help"></p>
+        </div>
+      </template>
 
-      <div class="setting">
-        <label class="setting-label" for="knob-max">
-          Most articles shown
-          <output class="setting-value" for="knob-max" x-text="knobDraft.max_displayed"></output>
-        </label>
-        <input type="range" class="setting-range" id="knob-max"
-               min="1" max="200" step="1"
-               :value="gating.max_displayed"
-               @input="knobDraft.max_displayed = Number($event.target.value)"
-               @change="setKnob('max_displayed', $event.target)">
-        <p class="setting-help">
-          A hard cap on the list, whatever the cutoff allows. Anything past it
-          is counted as overflow rather than dropped.
-        </p>
-      </div>
-
-      <!-- The cadence of the review loop, not of the gate — but it is a knob
-           and it belongs beside the other two, so the reader finds every
-           number they can turn in one place. -->
-      <div class="setting">
-        <label class="setting-label" for="knob-threshold">
-          Re-evaluate every
-          <output class="setting-value" for="knob-threshold"
-                  x-text="`${knobDraft.distill_threshold} ratings`"></output>
-        </label>
-        <input type="range" class="setting-range" id="knob-threshold"
-               min="5" max="200" step="1"
-               :value="prefs.distill_threshold"
-               @input="knobDraft.distill_threshold = Number($event.target.value)"
-               @change="setKnob('distill_threshold', $event.target)">
-        <p class="setting-help">
-          How many ratings to gather before Hermes offers to revise your taste
-          profile. Clearing a rating takes it back out of the count, so the
-          tally below can fall as well as rise.
-        </p>
-      </div>
-
-      <!-- A class bind, not x-show, and every message paragraph below is the
-           same. These are all written by a handler that clears the old message,
-           awaits a request, then sets the new one — and over localhost, which is
-           the only place this app runs, the response lands inside the same
-           animation frame the clear did. That is the shape x-show cannot
-           survive: its hide defers through queueMicrotask -> rAF -> a promise
-           chain while its show is a bare rAF, so the late hide swallows the show
-           and the paragraph ends up display:none with the new text already
-           written into it. It bites the *second* consecutive message, the first
-           clear being a no-op assignment reactivity skips — which is exactly
-           "I tapped Propose again and it silently did nothing".
-           A class bind has no rAF path at all, so no ordering of clear-and-set
-           can strand it. The three review panels keep x-show for a different
+      <!-- No visibility binding at all, here or on the four message paragraphs
+           further down: `.message:empty` in the stylesheet hides them, so
+           writing '' *is* hiding them. x-show was actively broken on this shape
+           — each is cleared, awaited, then set, and over localhost both
+           transitions land in one frame, where x-show's deferred hide swallows
+           its own bare-rAF show and strands the paragraph hidden with the new
+           text already in it. A class bind fixed that but left five copies of
+           one visibility expression to keep in step; an empty element has
+           nothing to keep in step. The full reasoning is on the rule in
+           style.css. The three review panels keep x-show for a different
            reason: they never all go false, so they can only swap. -->
-      <p class="hint knob-error" role="status" :class="{ hidden: !knobError }" x-text="knobError"></p>
+      <p class="hint message message-error" role="status" x-text="knobError"></p>
 
       <!-- ---------------------------------------------------------------- -->
       <!-- Taste profile                                                    -->
@@ -369,7 +335,15 @@
            any dependency of its expression changes, so refetching the same body
            into a fresh object is still a write to the element, and a write is
            what loses the edit. The seed moves only when a different version
-           arrives. -->
+           arrives.
+
+           Disabled until that first response lands. The seed rule protects
+           every refetch but the first, which always refills because `version`
+           starts null — so this is the one window where typing is certain to be
+           discarded rather than merely at risk. Closing it by refusing the
+           input keeps the other half of the rule intact: a genuinely new
+           version still wins, because editing against a profile that is no
+           longer live is the worse failure. -->
       <div class="setting setting-block">
         <!-- The version is a sibling of the heading, not inside it: nested, a
              screen reader announces the heading as "Taste profile profile-v2 ·
@@ -383,6 +357,7 @@
         </div>
         <textarea class="text-area" id="profile-body" x-ref="profileBody"
                   rows="12" spellcheck="false"
+                  :disabled="!profileLoaded"
                   :value="profileSeed"></textarea>
         <div class="setting-actions">
           <p class="setting-help">
@@ -390,12 +365,12 @@
             next poll — articles already scored keep the score they were given
             until something re-scores them.
           </p>
-          <button type="button" class="btn" :disabled="savingProfile"
+          <button type="button" class="btn" :disabled="savingProfile || !profileLoaded"
                   @click="saveProfile($refs.profileBody)"
                   x-text="savingProfile ? 'Saving…' : 'Save'"></button>
         </div>
-        <p class="hint knob-error" role="status" :class="{ hidden: !profileError }" x-text="profileError"></p>
-        <p class="hint" role="status" :class="{ hidden: !profileNotice }" x-text="profileNotice"></p>
+        <p class="hint message message-error" role="status" x-text="profileError"></p>
+        <p class="hint message" role="status" x-text="profileNotice"></p>
       </div>
 
       <!-- ---------------------------------------------------------------- -->
@@ -451,8 +426,8 @@
           </div>
         </div>
 
-        <p class="hint knob-error" role="status" :class="{ hidden: !reviewError }" x-text="reviewError"></p>
-        <p class="hint" role="status" :class="{ hidden: !reviewNotice }" x-text="reviewNotice"></p>
+        <p class="hint message message-error" role="status" x-text="reviewError"></p>
+        <p class="hint message" role="status" x-text="reviewNotice"></p>
       </div>
     </section>
   </main>
