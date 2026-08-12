@@ -211,3 +211,14 @@ async def test_no_ratings_is_rejected_without_calling_the_api() -> None:
         await _distiller(client).propose("old", [])
 
     client.messages.create.assert_not_awaited()
+
+
+@pytest.mark.parametrize("bad", [[1, 2], "a string", 5, None])
+async def test_malformed_tool_arguments_stay_a_distillation_error(bad) -> None:
+    """`dict()` on a non-mapping raises TypeError/ValueError, not our error.
+
+    The route catches DistillationError to return a 502 the panel can show; an
+    escaping TypeError would be a 500 with a traceback instead.
+    """
+    with pytest.raises(DistillationError):
+        await _distiller(_client(bad)).propose("old", RATED)

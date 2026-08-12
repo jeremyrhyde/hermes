@@ -243,7 +243,23 @@ class ProfileDistiller:
 
     @staticmethod
     def _extract_tool_input(response: Any) -> dict[str, Any]:
+        """The forced tool's arguments, as a plain dict.
+
+        ``block.input`` is only conventionally a mapping. A list, a string, or
+        a half-materialized SDK object all reach ``dict()``, which raises
+        ``TypeError`` or ``ValueError`` — neither a :class:`DistillationError`,
+        so the route's handler would miss it and the reader would get a 500
+        with a traceback instead of the panel saying what went wrong. The same
+        shape guards :mod:`services.scorer`; change both together.
+        """
+
         for block in getattr(response, "content", []):
             if getattr(block, "type", None) == "tool_use":
-                return dict(block.input)
+                try:
+                    return dict(block.input)
+                except (TypeError, ValueError) as exc:
+                    raise DistillationError(
+                        "tool_use arguments were not a mapping: "
+                        f"{type(block.input).__name__}"
+                    ) from exc
         raise DistillationError("response contained no tool_use block")

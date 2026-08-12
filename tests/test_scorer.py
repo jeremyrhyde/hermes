@@ -318,3 +318,14 @@ def test_score_requires_a_rationale() -> None:
     """
     with pytest.raises(ValidationError):
         Score(value=74, rubric_version="v1", profile_version="p1")
+
+
+@pytest.mark.parametrize("bad", [[1, 2], "a string", 5, None])
+async def test_malformed_tool_arguments_stay_a_scoring_error(bad) -> None:
+    """`dict()` on a non-mapping raises TypeError/ValueError, not our error.
+
+    The pipeline catches ScoringError so one bad response costs one article; an
+    escaping TypeError would take down the whole poll.
+    """
+    with pytest.raises(ScoringError):
+        await _scorer(_client(bad)).score(ARTICLE, SUMMARY, PROFILE)

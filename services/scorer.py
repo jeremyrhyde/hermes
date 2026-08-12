@@ -274,9 +274,25 @@ class ClaudeScorer:
 
     @staticmethod
     def _extract_tool_input(response: Any, article_id: int) -> dict[str, Any]:
+        """The forced tool's arguments, as a plain dict.
+
+        ``block.input`` is only conventionally a mapping. A list, a string, or
+        a half-materialized SDK object all reach ``dict()``, which raises
+        ``TypeError`` or ``ValueError`` — neither a :class:`ScoringError`, so
+        the pipeline's ``except ScoringError`` would miss it and one malformed
+        response would take down the whole poll rather than one article. The
+        same shape guards :mod:`services.profile`; change both together.
+        """
+
         for block in getattr(response, "content", []):
             if getattr(block, "type", None) == "tool_use":
-                return dict(block.input)
+                try:
+                    return dict(block.input)
+                except (TypeError, ValueError) as exc:
+                    raise ScoringError(
+                        f"article {article_id}: tool_use arguments were not a "
+                        f"mapping: {type(block.input).__name__}"
+                    ) from exc
         raise ScoringError(
             f"article {article_id}: response contained no tool_use block"
         )
