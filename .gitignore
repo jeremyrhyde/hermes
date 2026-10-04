@@ -1,20 +1,34 @@
+# ---- Pantheon standard: keep this block identical across repos ----
 # Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
-
-# Environments
 .venv/
+dist/
+build/
+
+# Local config and secrets — commit the *.example copies instead
 .env
 
-# Local data
+# Runtime data
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
+logs/
+*.log
 
-# OS
+# Frontend
+node_modules/
+
+# Editors / OS / sync tools
 .DS_Store
+.codesync
+.stfolder
+.stignore
+*.sync-conflict-*
 
-# Local config
+# ---- hermes-specific ----
 sources.yaml
 profile.md
