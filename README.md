@@ -34,7 +34,7 @@ make install     # uv sync — creates .venv from pyproject.toml
 make run         # start the server
 ```
 
-Then open <http://localhost:8000/ui/>.
+Then open <http://localhost:8002/>.
 
 Bare `make` prints the full target list. `make run-dev` starts with
 auto-reload; `make test` runs the suite.
@@ -55,7 +55,7 @@ make poll-now ID=astralcodexten   # force one source to poll immediately
    still boots, but the poller never starts — nothing is ingested or
    summarized, `POST /sources/{id}/poll` (and `make poll-now`) returns 503,
    and `/health` reports the startup failure.
-3. `make run`, then open <http://localhost:8000/ui/>.
+3. `make run`, then open <http://localhost:8002/>.
 
 The poller wakes every 60s and polls each source on its own adaptive schedule
 (15 min–4 h). To see something immediately, use `make poll-now ID=<source-id>`.
@@ -66,7 +66,7 @@ The poller wakes every 60s and polls each source on its own adaptive schedule
 |------|------|
 | `main.py` | Entry point: builds the app, owns the startup/shutdown lifespan, exposes `/health` |
 | `config.py` | `Settings` — every env-var knob in one pydantic-settings class |
-| `core/api.py` | FastAPI factory: routers, the `/ws` endpoint, the `/ui` static mount |
+| `core/api.py` | FastAPI factory: routers, the `/api/ws` endpoint, the UI mounted at `/` |
 | `core/events.py` | `EventBus` — async pub/sub, the seam between components |
 | `core/websocket.py` | `WebSocketManager` — connection set + broadcast fan-out |
 | `schemas/` | Pydantic models. No I/O, no imports from `core`/`services` |
@@ -104,7 +104,7 @@ banner in the UI, and the server stays up.
    refreshAll()  ──►  GET /health                (Promise.allSettled)
        │
        ▼
-   connectWebSocket()  ──►  ws://host/ws         (exponential backoff, 1s → 30s)
+   connectWebSocket()  ──►  ws://host/api/ws     (exponential backoff, 1s → 30s)
        │
        ▼
    user acts                              something publishes an Event
@@ -135,7 +135,7 @@ factory consumed by `x-data="app()"` on `<body>`; all UI state lives on that
 one object. All colors and spacing are CSS custom properties on `:root` in
 `style.css` — rebrand by overriding tokens, not by editing component rules.
 
-`/ui/` and the API are served from one process, same origin, so there's no
+The UI (at `/`) and the API (under `/api/`) are served from one process, same origin, so there's no
 CORS story to configure.
 
 ## Extending it
@@ -167,16 +167,30 @@ and uncomment what you need, or set the variables in the environment.
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `HOST` | `0.0.0.0` | Bind address |
-| `PORT` | `8000` | Listen port |
+| `PORT` | `8002` | Listen port |
 | `LOG_LEVEL` | `info` | Root log level |
-| `WEB_DIR` | `./web` | Static UI directory mounted at `/ui` |
+| `WEB_DIR` | `./web` | Static UI directory served at `/` |
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| **404 at `/ui/`** | `WEB_DIR` missing, so the mount was skipped | Confirm `web/index.html` exists; look for `"Static UI mounted at /ui"` in the log |
-| **`/ui` (no slash) 404s** | `StaticFiles` only serves the trailing-slash form | Always link `/ui/` |
-| **No live updates** | WebSocket never connected | DevTools → Network → WS; the `/ws` row should be 101. The header dot is red when offline |
+| **404 at `/`** | `WEB_DIR` missing, so the mount was skipped | Confirm `web/index.html` exists; look for `"Static UI mounted at /"` in the log |
+| **No live updates** | WebSocket never connected | DevTools → Network → WS; the `/api/ws` row should be 101. The header dot is red when offline |
 | **WS connects then drops** | A reverse proxy stripping `Upgrade` headers | Bypass the proxy in dev, or forward `Upgrade` and `Connection` |
 | **Raw `x-text` flashes on load** | Alpine hasn't initialized | The `[x-cloak]` rule covers this; confirm `style.css` loaded |
+
+## Using with Pantheon
+
+Hermes is one of the modules of [Pantheon](https://github.com/jeremyrhyde/pantheon),
+which runs it alongside the other modules behind one address. Nothing here
+changes for that: Hermes always listens on **port 8002**, serves its UI at
+`/`, its API under `/api/` (WebSocket `/api/ws`) and `/health` at the root.
+
+| | Standalone | Inside Pantheon |
+|---|---|---|
+| UI | `http://<host>:8002/` | `http://<main-pi>:8000/hermes/` |
+| Service | `make service-install` | installed by Pantheon's `make service-install-all` |
+
+Inside Pantheon, Hermes is the news feed: Pantheon's home screen links to
+it, and a later home-screen tile can read `hermes/api/ranked/` directly.
