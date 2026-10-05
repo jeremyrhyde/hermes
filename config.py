@@ -30,7 +30,7 @@ class Settings(BaseSettings):
         PORT: TCP port the server listens on. Default ``8002``.
         LOG_LEVEL: Log level passed to uvicorn / loggers. Default ``"info"``.
         WEB_DIR: Directory containing the static frontend served by FastAPI
-            under ``/ui``. Default ``"./web"``.
+            served at ``/``. Default ``"./web"``.
         DB_PATH: Path to the SQLite database file. Default ``"./hermes.db"``.
         SOURCES_CONFIG_PATH: Path to the declarative source list. A missing
             file yields an empty source list rather than an error, so the

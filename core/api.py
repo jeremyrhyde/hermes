@@ -69,8 +69,8 @@ logger = logging.getLogger(__name__)
 UI_MOUNT_PATH = "/"
 """Where static frontend assets are mounted.
 
-The browser opens ``http://<host>:8000/ui/``. Mounted under a sub-path to
-avoid any chance of shadowing API routes.
+The browser opens ``http://<host>:8002/``. The mount matches every path, so
+:func:`mount_ui` must run after every route is registered.
 """
 
 
@@ -893,6 +893,18 @@ def _build_ws_router() -> APIRouter:
 # ---------------------------------------------------------------------------
 
 
+class _UIFiles(StaticFiles):
+    """Static UI at "/". It also receives WebSocket connects that match no
+    route (e.g. an old cached page retrying /ws); close those cleanly instead
+    of letting StaticFiles assert on a non-HTTP scope."""
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "websocket":
+            await WebSocket(scope, receive, send).close()
+            return
+        await super().__call__(scope, receive, send)
+
+
 def mount_ui(app: FastAPI, settings: "Settings") -> None:
     """Serve the static UI at ``/``.
 
@@ -907,7 +919,7 @@ def mount_ui(app: FastAPI, settings: "Settings") -> None:
         )
         return
     app.mount(
-        UI_MOUNT_PATH, StaticFiles(directory=str(web_dir), html=True), name="ui"
+        UI_MOUNT_PATH, _UIFiles(directory=str(web_dir), html=True), name="ui"
     )
     logger.info("Static UI mounted at %s -> %s", UI_MOUNT_PATH, web_dir)
 

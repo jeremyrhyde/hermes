@@ -5,18 +5,20 @@ files work standalone (http://pi:8002/) and behind Pantheon's gateway
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
 from config import Settings
+from main import build_app
 
 
 def test_default_port_is_8002(monkeypatch):
     monkeypatch.delenv("PORT", raising=False)
     assert Settings(_env_file=None).PORT == 8002
-from pathlib import Path
-
-from fastapi.testclient import TestClient
-
-from main import build_app
-
 
 def _settings(tmp_path: Path) -> Settings:
     web = tmp_path / "web"
@@ -57,8 +59,6 @@ def test_ui_served_at_root_without_shadowing_health(tmp_path):
     assert client.get("/ui/").status_code == 404
 
 
-import re
-
 WEB = Path(__file__).resolve().parent.parent / "web"
 
 # Root-absolute URLs break under a gateway prefix (/hermes/...).
@@ -80,3 +80,11 @@ def test_web_ui_uses_only_relative_urls():
             if any(p.search(line) for p in _ABSOLUTE):
                 offenders.append(f"{f.relative_to(WEB)}:{n}: {line.strip()}")
     assert offenders == []
+
+
+def test_stray_websocket_is_closed_cleanly_by_the_ui_mount(tmp_path):
+    # An old cached page retrying `/ws` must not hit StaticFiles' assertion.
+    client = TestClient(build_app(_settings(tmp_path)))
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/ws"):
+            pass

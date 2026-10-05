@@ -1,8 +1,9 @@
 /* Hermes web UI — single Alpine.js state object.
  *
  * Architecture:
- *   - REST: fetch() against /ranked/, /saved/, /sources/ and /health
- *   - Realtime: WebSocket /ws receives Event JSON; applyEvent() patches state
+ *   - REST: relative fetch() against api/ranked/, api/saved/, api/sources/
+ *     and health
+ *   - Realtime: WebSocket api/ws receives Event JSON; applyEvent() patches state
  *   - applyEvent tolerates unknown event types: log and ignore, never throw
  *
  * No build step. No external deps beyond Alpine.js and its collapse plugin

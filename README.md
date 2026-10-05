@@ -53,7 +53,7 @@ make poll-now ID=astralcodexten   # force one source to poll immediately
 1. `cp sources.yaml.example sources.yaml` and list the feeds you follow.
 2. `cp .env.example .env` and set `ANTHROPIC_API_KEY`. Without it the server
    still boots, but the poller never starts — nothing is ingested or
-   summarized, `POST /sources/{id}/poll` (and `make poll-now`) returns 503,
+   summarized, `POST /api/sources/{id}/poll` (and `make poll-now`) returns 503,
    and `/health` reports the startup failure.
 3. `make run`, then open <http://localhost:8002/>.
 
@@ -135,8 +135,8 @@ factory consumed by `x-data="app()"` on `<body>`; all UI state lives on that
 one object. All colors and spacing are CSS custom properties on `:root` in
 `style.css` — rebrand by overriding tokens, not by editing component rules.
 
-The UI (at `/`) and the API (under `/api/`) are served from one process, same origin, so there's no
-CORS story to configure.
+The UI (at `/`) and the API (under `/api/`) are served from one process, same
+origin, so there's no CORS story to configure.
 
 ## Extending it
 

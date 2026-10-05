@@ -3,8 +3,8 @@
 #   source "$(dirname "$0")/_common.sh"
 #
 # Resolves paths, locates `uv` (systemd and launchd run with a minimal PATH,
-# so the absolute path is baked into the unit), and defines render_unit /
-# ensure_apt_packages. Adapted from hestia/scripts/_pi-common.sh.
+# so the absolute path is baked into the unit), and defines render_unit.
+# Adapted from hestia/scripts/_pi-common.sh.
 
 HERMES_HOME="$(cd "$(dirname "${BASH_SOURCE[1]}")/.." && pwd)"
 USER_NAME="$(id -un)"
@@ -35,21 +35,4 @@ render_unit() {
     -e "s|@UV_BIN@|$UV_BIN|g" \
     -e "s|@LOG_DIR@|$LOG_DIR|g" \
     "$1" > "$2"
-}
-
-ensure_apt_packages() {
-  # ensure_apt_packages [--no-recommends] <pkg>... — install only what's missing.
-  local apt_opts=()
-  if [[ "${1:-}" == "--no-recommends" ]]; then
-    apt_opts+=(--no-install-recommends); shift
-  fi
-  local missing=()
-  for p in "$@"; do
-    dpkg -s "$p" >/dev/null 2>&1 || missing+=("$p")
-  done
-  if [[ ${#missing[@]} -gt 0 ]]; then
-    echo "  installing apt packages: ${missing[*]}"
-    sudo apt-get update -qq
-    sudo apt-get install -y "${apt_opts[@]}" "${missing[@]}"
-  fi
 }

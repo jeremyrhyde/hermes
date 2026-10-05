@@ -19,7 +19,7 @@ Usage::
 
     uv run python main.py
     # or
-    uv run uvicorn main:app --host 0.0.0.0 --port 8000
+    uv run uvicorn main:app --host 0.0.0.0 --port 8002
 
 The lifespan context handles startup/shutdown for both invocations, so
 module import performs no I/O.

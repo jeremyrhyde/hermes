@@ -6,7 +6,7 @@ instead.
 
 | File | Owns |
 |------|------|
-| `api.py` | The `create_app()` factory: routers, `/ws`, the `/ui` static mount |
+| `api.py` | The `create_app()` factory: routers, `/api/ws`, the UI mounted at `/` |
 | `events.py` | `EventBus` — async pub/sub keyed by `EventType` |
 | `websocket.py` | `WebSocketManager` — connection set, broadcast fan-out, bus subscription |
 
