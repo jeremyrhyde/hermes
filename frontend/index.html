@@ -21,6 +21,10 @@
         var root = document.documentElement;
         root.dataset.theme = p.theme === 'light' || p.theme === 'dark' ? p.theme
           : (mm('(prefers-color-scheme: light)') ? 'light' : 'dark');
+        if (root.dataset.theme === 'light') {
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute('content', '#f6f8fa'); // = --color-bg in tokens.css' light block
+        }
         root.dataset.motion = p.motion === 'full' || p.motion === 'reduced' ? p.motion
           : (mm('(prefers-reduced-motion: reduce)') ? 'reduced' : 'full');
       })();

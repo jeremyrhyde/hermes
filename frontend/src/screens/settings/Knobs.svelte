@@ -7,10 +7,10 @@
   <h2 class="section-title" id="knobs-title">Feed</h2>
   {#each KNOBS as k (k.key)}
     <div class="knob">
-      <label class="label" for={k.id}>
-        <span>{k.label}</span>
+      <div class="label">
+        <label for={k.id}>{k.label}</label>
         <output for={k.id}>{settings.drafts[k.key]}{k.unit}</output>
-      </label>
+      </div>
       <!-- The number tracks the drag live; the write waits for release
            (change), never one PUT per pixel. -->
       <input type="range" class="range" id={k.id} min={k.min} max={k.max} step="1"
