@@ -1,0 +1,28 @@
+# Hermes server — systemd *user* service (Linux / Raspberry Pi).
+#
+# Installed by scripts/install-server.sh (`make service-install`), which
+# rewrites @HERMES_HOME@ and @UV_BIN@ to the real paths and enables linger so
+# it starts at boot without a login.
+#
+# Runs main.py from the repo root, so HOST/PORT and the rest come from .env
+# via config.Settings — the same values `make run` uses.
+#
+# Logs: journalctl --user -u hermes.service -f   (or `make service-logs`)
+
+[Unit]
+Description=Hermes server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@HERMES_HOME@
+ExecStart=@UV_BIN@ run python main.py
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=-@HERMES_HOME@/.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

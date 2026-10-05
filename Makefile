@@ -49,6 +49,13 @@ help:
 	@echo "  make feed           print the 10 most recent feed items"
 	@echo "  make poll-now ID=x  force an immediate poll of one source"
 	@echo ""
+	@echo "Background service (systemd on Linux/Pi, launchd on macOS):"
+	@echo "  make service-install    Install + start at boot/login"
+	@echo "  make service-uninstall  Stop and remove it"
+	@echo "  make service-status     Show whether it is running"
+	@echo "  make service-logs       Follow its logs"
+	@echo "  make service-restart    Restart it (e.g. after a git pull)"
+	@echo ""
 	@echo "Examples:"
 	@echo "  make run-dev PORT=9000"
 	@echo "  make poll-now ID=astralcodexten"
@@ -159,3 +166,24 @@ poll-now:
 		exit 1; \
 	fi
 	@curl -sS -X POST $(HERMES_HOST)/api/sources/$(ID)/poll && echo ""
+
+# ---------------------------------------------------------------------------
+# Background service — see scripts/install-server.sh. Pantheon's installer
+# runs `make -C modules/hermes service-install`.
+# ---------------------------------------------------------------------------
+
+.PHONY: service-install service-uninstall service-status service-logs service-restart
+service-install:
+	./scripts/install-server.sh
+
+service-uninstall:
+	./scripts/install-server.sh --uninstall
+
+service-status:
+	./scripts/install-server.sh --status
+
+service-logs:
+	./scripts/install-server.sh --logs
+
+service-restart:
+	./scripts/install-server.sh --restart
