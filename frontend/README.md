@@ -49,5 +49,6 @@ repo root, `make run-dev` starts the API and this dev server together, and
 ## Icons
 
 `src/components/Icon.svelte` holds inline Lucide paths; add one there. The app
-icon is `public/icon.svg`; after editing it run `frontend/scripts/icons.sh` and commit
-the PNGs.
+icons are the PNGs in `public/` (`icon-512`, `icon-192`, `apple-touch-icon`,
+`favicon-32`), drawn by Pantheon's `scripts/make-icon.py hermes`; replace them
+with real art at the same paths any time.
