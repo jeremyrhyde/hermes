@@ -44,6 +44,7 @@ from core.api import (
     PREF_MAX_DISPLAYED,
     PREF_SCORE_CUTOFF,
     create_app,
+    mount_ui,
 )
 from core.events import EventBus
 from core.state import StateStore
@@ -606,6 +607,7 @@ def build_app(settings: Settings | None = None) -> FastAPI:
         state_store=None,
         poller=None,
         settings=settings,
+        mount_static=False,
     )
     app.router.lifespan_context = _make_lifespan(settings)
 
@@ -622,6 +624,8 @@ def build_app(settings: Settings | None = None) -> FastAPI:
             "startup_failures": getattr(app.state, "startup_failures", []),
         }
 
+    # Last: the UI mount at "/" would shadow any route added after it.
+    mount_ui(app, settings)
     return app
 
 

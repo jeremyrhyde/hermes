@@ -46,3 +46,12 @@ def test_websocket_is_at_api_ws(tmp_path):
     client = TestClient(build_app(_settings(tmp_path)))  # no `with`: lifespan not run
     with client.websocket_connect("/api/ws"):
         pass
+
+
+def test_ui_served_at_root_without_shadowing_health(tmp_path):
+    client = TestClient(build_app(_settings(tmp_path)))  # no `with`: lifespan not run
+    root = client.get("/")
+    assert root.status_code == 200
+    assert "contract-test-ui" in root.text
+    assert client.get("/health").json()["status"] == "ok"
+    assert client.get("/ui/").status_code == 404
