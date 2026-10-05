@@ -19,6 +19,8 @@ describe('parsePrefs', () => {
   it('defaults on corrupt JSON', () => expect(parsePrefs('{nope')).toEqual(DEFAULT_PREFS));
   it('keeps known values and replaces unknown ones', () =>
     expect(parsePrefs('{"theme":"light","motion":"sideways","extra":1}')).toEqual({ theme: 'light', motion: 'system' }));
+  it('replaces an unknown theme while keeping a valid motion', () =>
+    expect(parsePrefs('{"theme":"sepia","motion":"full"}')).toEqual({ theme: 'auto', motion: 'full' }));
   it('defaults a non-object', () => expect(parsePrefs('"light"')).toEqual(DEFAULT_PREFS));
 });
 

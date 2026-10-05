@@ -3,7 +3,7 @@ import { dur, reducedMotion } from './motion';
 
 function env(motion: string | undefined, osReduce: boolean) {
   vi.stubGlobal('document', { documentElement: { dataset: motion === undefined ? {} : { motion } } });
-  vi.stubGlobal('matchMedia', (q: string) => ({ matches: q.includes('reduce') && osReduce }));
+  vi.stubGlobal('matchMedia', (q: string) => ({ matches: q === '(prefers-reduced-motion: reduce)' && osReduce }));
 }
 afterEach(() => vi.unstubAllGlobals());
 
