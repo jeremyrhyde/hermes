@@ -163,7 +163,7 @@ run:
 run-dev:
 	@echo "API on :$(PORT) — UI dev server on http://localhost:5173/"
 	@trap 'kill 0' INT TERM EXIT; \
-	(cd $(FRONTEND) && $(NPM) run dev -- --host) & \
+	(cd $(FRONTEND) && HERMES_PORT=$(PORT) $(NPM) run dev -- --host) & \
 	$(UV) run uvicorn main:app --reload --host $(HOST) --port $(PORT)
 
 .PHONY: open

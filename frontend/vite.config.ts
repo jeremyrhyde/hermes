@@ -6,7 +6,11 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 
 // Served by FastAPI at / (and by Pantheon under /hermes/); in dev, Vite serves
-// the UI and forwards /api (including the WebSocket) and /health to :8002.
+// the UI and forwards /api (including the WebSocket) and /health to the API,
+// which is on :8002 unless HERMES_PORT says otherwise (`make run-dev PORT=…`).
+const apiPort = process.env.HERMES_PORT ?? '8002';
+const api = `http://localhost:${apiPort}`;
+
 export default defineConfig({
   base: './',
   plugins: [svelte()],
@@ -14,8 +18,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target: 'http://localhost:8002', ws: true },
-      '/health': 'http://localhost:8002',
+      '/api': { target: api, ws: true },
+      '/health': api,
     },
   },
   build: { outDir: 'dist', emptyOutDir: true },
