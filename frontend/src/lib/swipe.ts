@@ -24,6 +24,12 @@ export function shouldCommit(dx: number, width: number, velocity: number): Direc
   return far || flick ? (dx > 0 ? 'right' : 'left') : null;
 }
 
+/** A flick only counts if the finger was still moving when it lifted. */
+export const FLICK_IDLE_MS = 100;
+export function releaseVelocity(velocity: number, idleMs: number): number {
+  return idleMs > FLICK_IDLE_MS ? 0 : velocity;
+}
+
 /** Displacement shown for a drag of `dx`: 1:1 up to the threshold, then 30%. */
 export function resist(dx: number, width: number): number {
   const limit = COMMIT_SHARE * width;
@@ -55,18 +61,32 @@ export function swipe(node: HTMLElement, options: Options) {
   let lastT = 0;
   let velocity = 0;
   let axis: Axis = 'pending';
+  let clearTimer: ReturnType<typeof setTimeout> | undefined;
 
   const face = () => node.querySelector<HTMLElement>('[data-swipe-face]');
+
+  function clearUnderlay() {
+    clearTimeout(clearTimer);
+    clearTimer = undefined;
+    // Not if a new drag has begun since the spring-back started.
+    if (pointerId === null) delete node.dataset.swipe;
+  }
 
   function setDx(px: number, animate: boolean) {
     const el = face();
     if (!el) return;
     const ms = animate ? dur(180) : 0;
+    clearTimeout(clearTimer);
+    clearTimer = undefined;
     el.style.transition = ms ? `transform ${ms}ms ease-out` : 'none';
     el.style.transform = px ? `translateX(${px}px)` : '';
     if (px > 0) node.dataset.swipe = 'right';
     else if (px < 0) node.dataset.swipe = 'left';
-    else delete node.dataset.swipe;
+    else if (ms > 0) {
+      // Keep the underlay visible until the face has finished returning.
+      el.addEventListener('transitionend', clearUnderlay, { once: true });
+      clearTimer = setTimeout(clearUnderlay, ms + 50);
+    } else delete node.dataset.swipe;
   }
 
   // A swipe that started on the card head must not also toggle it open.
@@ -80,7 +100,14 @@ export function swipe(node: HTMLElement, options: Options) {
   }
 
   function onDown(e: PointerEvent) {
-    if (pointerId !== null || e.pointerType === 'mouse') return;
+    if (e.pointerType === 'mouse') return;
+    // A different second pointer is ignored; the same pointer again means its
+    // pointerup was lost (a pen lifted outside the card), so start afresh.
+    if (pointerId !== null && e.pointerId !== pointerId) return;
+    // A new touch ends any spring-back in progress, so its pending clear can't fire mid-gesture.
+    clearTimeout(clearTimer);
+    clearTimer = undefined;
+    delete node.dataset.swipe;
     pointerId = e.pointerId;
     startX = lastX = e.clientX;
     startY = e.clientY;
@@ -113,7 +140,7 @@ export function swipe(node: HTMLElement, options: Options) {
     pointerId = null;
     if (axis !== 'horizontal') return;
     swallowNextClick();
-    const dir = e.type === 'pointerup' ? shouldCommit(dx, node.offsetWidth, velocity) : null;
+    const dir = e.type === 'pointerup' ? shouldCommit(dx, node.offsetWidth, releaseVelocity(velocity, e.timeStamp - lastT)) : null;
     setDx(0, true);
     if (!dir) return;
     navigator.vibrate?.(10);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyGesture, resist, shouldCommit } from './swipe';
+import { classifyGesture, releaseVelocity, resist, shouldCommit } from './swipe';
 
 describe('classifyGesture', () => {
   it('waits for 10px of travel', () => expect(classifyGesture(6, 6)).toBe('pending'));
@@ -25,4 +25,12 @@ describe('resist', () => {
     expect(resist(240, 400)).toBe(140 + 100 * 0.3);
     expect(resist(-240, 400)).toBe(-(140 + 100 * 0.3));
   });
+});
+
+describe('releaseVelocity', () => {
+  it('keeps the velocity while the finger was still moving', () => {
+    expect(releaseVelocity(0.8, 40)).toBe(0.8);
+    expect(releaseVelocity(0.8, 100)).toBe(0.8);
+  });
+  it('drops a stale flick', () => expect(releaseVelocity(0.8, 101)).toBe(0));
 });
