@@ -104,10 +104,11 @@ banner in the UI, and the server stays up.
    page load
        │
        ▼
-   refreshAll()  ──►  GET /health                (Promise.allSettled)
+   boot()  ──►  /health, /api/sources, the tab's list   (Promise.all)
        │
        ▼
-   connectWebSocket()  ──►  ws://host/api/ws     (exponential backoff, 1s → 30s)
+   live.connect()  ──►  ws://host/api/ws         (exponential backoff, 1s → 30s)
+                        refreshAll() reruns on system_ready and on reconnect
        │
        ▼
    user acts                              something publishes an Event

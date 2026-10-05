@@ -18,11 +18,11 @@ repo root, `make run-dev` starts the API and this dev server together, and
 ## Layout
 
 - `src/lib/*.ts` — pure logic with tests beside it (`route`, `feed`, `swipe`,
-  `live`, `prefs`, `format`, `settings`, `api`). Put anything worth a test here.
+  `live`, `prefs`, `format`, `settings`, `api`, `motion`, `types`). Put anything worth a test here.
 - `src/lib/*.svelte.ts` — `$state` stores wrapping that logic (`feed`,
   `settings`, `app`, `router`, `live`, `prefs`, `toast`).
 - `src/components/` — shared pieces (NavPill, Header, FeedCard, …).
-- `src/screens/` — one component per tab; Settings (knobs, taste profile,
+- `src/screens/` — one component per screen (Feed and Saved share `FeedScreen`); Settings (knobs, taste profile,
   review, Display, About) is split into `src/screens/settings/`.
 - `src/styles/tokens.css` — design tokens; `src/app.css` — global rules.
 
@@ -49,5 +49,5 @@ repo root, `make run-dev` starts the API and this dev server together, and
 ## Icons
 
 `src/components/Icon.svelte` holds inline Lucide paths; add one there. The app
-icon is `public/icon.svg`; after editing it run `scripts/icons.sh` and commit
+icon is `public/icon.svg`; after editing it run `frontend/scripts/icons.sh` and commit
 the PNGs.
