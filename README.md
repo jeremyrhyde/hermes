@@ -1,6 +1,6 @@
 # Hermes
 
-A FastAPI core that serves a no-build web UI, wired together by an in-process
+A FastAPI core that serves a Svelte web UI, wired together by an in-process
 event bus with WebSocket push to the browser.
 
 The server boots, polls sources on an adaptive schedule, summarizes new
@@ -27,17 +27,20 @@ consistent across all three.
 
 ## Quickstart
 
-Requires [uv](https://docs.astral.sh/uv/).
+Requires [uv](https://docs.astral.sh/uv/) and Node 20+ (`make setup` installs both if missing).
 
 ```bash
-make install     # uv sync — creates .venv from pyproject.toml
-make run         # start the server
+make setup build   # uv + Node, Python deps, and the UI built into frontend/dist
+make run           # start the server
 ```
 
 Then open <http://localhost:8002/>.
 
-Bare `make` prints the full target list. `make run-dev` starts with
-auto-reload; `make test` runs the suite.
+Bare `make` prints the full target list. `make run-dev` runs the API with
+auto-reload plus the Vite dev server on <http://localhost:5173/> (hot reload,
+proxying `/api` and `/health` to the API; `make run-dev PORT=9000` moves both
+the API and the proxy); `make test` runs pytest, vitest and the UI type
+checks (`make check` runs just the latter).
 
 With the server up and the UI open, from a second terminal:
 
@@ -71,7 +74,7 @@ The poller wakes every 60s and polls each source on its own adaptive schedule
 | `core/websocket.py` | `WebSocketManager` — connection set + broadcast fan-out |
 | `schemas/` | Pydantic models. No I/O, no imports from `core`/`services` |
 | `services/` | Feed domain: source drivers, extraction, summarizer, pipeline, poller |
-| `web/` | The UI: `index.html`, `style.css`, `app.js`. No build step |
+| `frontend/` | The UI: Svelte 5 + Vite + TypeScript, built to `frontend/dist`. See `frontend/README.md` |
 | `tests/` | pytest suite against a hermetic app |
 
 ## Architecture
@@ -116,7 +119,7 @@ banner in the UI, and the server stays up.
    re-sync from response   ...            WebSocketManager.broadcast()
                                                       │
                                                       ▼
-                                              applyEvent(event) in app.js
+                                              live.on(type, …) in frontend/src/App.svelte
 ```
 
 A producer publishes an `Event` without knowing who listens. The
@@ -126,14 +129,14 @@ manually. Both the bus and the broadcast fan out with
 `asyncio.gather(..., return_exceptions=True)` — one failing subscriber or one
 dead socket can never block the rest.
 
-### No build step
+### The UI
 
-The UI is vanilla HTML + CSS + [Alpine.js](https://alpinejs.dev) from a CDN.
-Edit a file in `web/`, hard-refresh the browser, see the change. No `npm
-install`, no bundler, no source maps. `app.js` exports a single `app()`
-factory consumed by `x-data="app()"` on `<body>`; all UI state lives on that
-one object. All colors and spacing are CSS custom properties on `:root` in
-`style.css` — rebrand by overriding tokens, not by editing component rules.
+`frontend/` is a Svelte 5 (runes) + Vite + TypeScript app, built the same way
+as Apollo's. `make build` writes `frontend/dist`, which FastAPI serves at `/`;
+hashed files under `assets/` are cached forever and everything else is
+revalidated, so a rebuild shows up on the next load. Routes are hash routes
+(`#/feed?cat=AI&open=12`), so one build works at `:8002/` and under
+Pantheon's `/hermes/`. Design tokens live in `frontend/src/styles/tokens.css`.
 
 The UI (at `/`) and the API (under `/api/`) are served from one process, same
 origin, so there's no CORS story to configure.
@@ -151,13 +154,14 @@ keyword-only parameter for it on `create_app`.
 
 **A new event type** — add it to `EventType` in `schemas/events.py`, list it
 in `BROADCAST_TYPES` in `core/websocket.py` if the browser should see it, and
-add a `case` to the `switch` in `applyEvent()` in `web/app.js`.
+subscribe to it with `live.on('<type>', …)` in `frontend/src/App.svelte`.
 
 **A new setting** — add a field to `Settings` in `config.py` and document it
 in `.env.example`. Don't read `os.environ` at the call site.
 
-**A new tab** — add a `<button>` to `<nav class="tabs">` and a sibling
-`<section x-show="tab === '...'">` in `index.html`. No router, no config.
+**A new tab** — add the name to `TABS` in `frontend/src/lib/route.ts`, an
+entry to `ITEMS` in `NavPill.svelte`, and a branch in `App.svelte`'s
+`{#key tab}` block. See `frontend/README.md`.
 
 ## Configuration
 
@@ -169,16 +173,16 @@ and uncomment what you need, or set the variables in the environment.
 | `HOST` | `0.0.0.0` | Bind address |
 | `PORT` | `8002` | Listen port |
 | `LOG_LEVEL` | `info` | Root log level |
-| `WEB_DIR` | `./web` | Static UI directory served at `/` |
+| `WEB_DIR` | `./frontend/dist` | Built UI served at `/` |
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| **404 at `/`** | `WEB_DIR` missing, so the mount was skipped | Confirm `web/index.html` exists; look for `"Static UI mounted at /"` in the log |
+| **404 at `/`** | `WEB_DIR` missing, so the mount was skipped | Run `make build`; look for `"Static UI mounted at /"` in the log |
 | **No live updates** | WebSocket never connected | DevTools → Network → WS; the `/api/ws` row should be 101. The header dot is red when offline |
 | **WS connects then drops** | A reverse proxy stripping `Upgrade` headers | Bypass the proxy in dev, or forward `Upgrade` and `Connection` |
-| **Raw `x-text` flashes on load** | Alpine hasn't initialized | The `[x-cloak]` rule covers this; confirm `style.css` loaded |
+| **Old UI after a rebuild** | A cached `index.html` from before the cache headers | Hard-refresh once; afterwards `index.html` is always revalidated |
 
 ## Using with Pantheon
 
