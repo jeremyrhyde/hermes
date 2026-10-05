@@ -179,7 +179,7 @@ async def test_ranked_endpoint_reports_the_gating_contract(
     await _seed(store, [("a", 95, 1), ("b", 40, 2), ("c", None, 3)])
     await store.set_preference("score_cutoff", "70")
 
-    body = client.get("/ranked/").json()
+    body = client.get("/api/ranked/").json()
 
     assert body["cutoff"] == 70
     assert body["max_displayed"] == 50
@@ -195,7 +195,7 @@ async def test_ranked_items_carry_the_full_feed_item_shape(
     """One DTO assembly, shared with /feed/ and /saved/."""
     await _seed(store, [("a", 95, 1)])
 
-    item = client.get("/ranked/").json()["displayed"][0]
+    item = client.get("/api/ranked/").json()["displayed"][0]
 
     assert set(item) >= {"article_id", "headline", "bullets", "url", "source",
                          "score", "rating", "categories", "saved"}
@@ -207,5 +207,5 @@ async def test_ranked_rejects_an_unknown_category(
 ) -> None:
     await _seed(store, [("a", 95, 1)])
 
-    res = client.get("/ranked/?category=nonsense")
+    res = client.get("/api/ranked/?category=nonsense")
     assert res.status_code == 400

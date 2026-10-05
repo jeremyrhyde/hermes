@@ -63,7 +63,7 @@ def client(seeded: StateStore) -> TestClient:
 
 
 def test_feed_returns_only_summarized_articles(client: TestClient) -> None:
-    res = client.get("/feed/")
+    res = client.get("/api/feed/")
     assert res.status_code == 200
 
     items = res.json()
@@ -72,7 +72,7 @@ def test_feed_returns_only_summarized_articles(client: TestClient) -> None:
 
 def test_feed_items_carry_source_ref(client: TestClient) -> None:
     """Spec 12.5: source identity ships in the card."""
-    item = client.get("/feed/").json()[0]
+    item = client.get("/api/feed/").json()[0]
 
     assert item["source"]["id"] == "acx"
     assert item["source"]["name"] == "Astral Codex Ten"
@@ -80,12 +80,12 @@ def test_feed_items_carry_source_ref(client: TestClient) -> None:
 
 
 def test_feed_is_reverse_chronological(client: TestClient) -> None:
-    items = client.get("/feed/").json()
+    items = client.get("/api/feed/").json()
     assert items[0]["published_at"] > items[1]["published_at"]
 
 
 def test_feed_item_shape(client: TestClient) -> None:
-    item = client.get("/feed/").json()[0]
+    item = client.get("/api/feed/").json()[0]
 
     assert set(item) >= {
         "article_id", "headline", "bullets", "url", "published_at",
@@ -96,11 +96,11 @@ def test_feed_item_shape(client: TestClient) -> None:
 
 
 def test_feed_respects_limit(client: TestClient) -> None:
-    assert len(client.get("/feed/?limit=1").json()) == 1
+    assert len(client.get("/api/feed/?limit=1").json()) == 1
 
 
 def test_sources_endpoint_reports_health(client: TestClient) -> None:
-    rows = client.get("/sources/").json()
+    rows = client.get("/api/sources/").json()
 
     assert len(rows) == 1
     assert rows[0]["id"] == "acx"
@@ -117,7 +117,7 @@ def test_manual_poll_returns_503_when_poller_absent(client: TestClient) -> None:
     it has no summarizer. This route must fail cleanly rather than drive it.
     """
 
-    res = client.post("/sources/acx/poll")
+    res = client.post("/api/sources/acx/poll")
 
     assert res.status_code == 503
     assert "poller" in res.json()["detail"]
@@ -128,17 +128,17 @@ def test_manual_poll_checks_poller_before_source_exists(
 ) -> None:
     """503 wins over 404 — the service is down, the lookup is moot."""
 
-    assert client.post("/sources/nope/poll").status_code == 503
+    assert client.post("/api/sources/nope/poll").status_code == 503
 
 
 def test_categories_endpoint_lists_configured_filters(client) -> None:
-    body = client.get("/categories/").json()
+    body = client.get("/api/categories/").json()
     assert [f["category"] for f in body["filters"]] == ["ai", "finance", "robotics"]
     assert body["selected"] == []
 
 
 def test_categories_counts_are_contextual(client) -> None:
-    body = client.get("/categories/?category=ai").json()
+    body = client.get("/api/categories/?category=ai").json()
     counts = {f["category"]: f["count"] for f in body["filters"]}
     assert counts["finance"] == 1
     assert counts["robotics"] == 0
@@ -147,41 +147,41 @@ def test_categories_counts_are_contextual(client) -> None:
 
 
 def test_feed_filters_with_and_semantics(client) -> None:
-    both = client.get("/feed/?category=ai&category=finance").json()
+    both = client.get("/api/feed/?category=ai&category=finance").json()
     assert len(both) == 1
-    ai_only = client.get("/feed/?category=ai").json()
+    ai_only = client.get("/api/feed/?category=ai").json()
     assert len(ai_only) == 2
 
 
 def test_feed_filter_excludes_untagged(client) -> None:
-    unfiltered = client.get("/feed/").json()
-    filtered = client.get("/feed/?category=ai").json()
+    unfiltered = client.get("/api/feed/").json()
+    filtered = client.get("/api/feed/?category=ai").json()
     assert len(unfiltered) > len(filtered)
 
 
 def test_unknown_category_returns_400(client) -> None:
-    res = client.get("/feed/?category=nonsense")
+    res = client.get("/api/feed/?category=nonsense")
     assert res.status_code == 400
     assert "nonsense" in res.json()["detail"]
 
 
 def test_vocabulary_category_not_in_filters_is_accepted(client) -> None:
     """filters controls the UI only; the data exists for the vocabulary."""
-    assert client.get("/feed/?category=semiconductors").status_code == 200
+    assert client.get("/api/feed/?category=semiconductors").status_code == 200
 
 
 def test_duplicate_category_params_collapse(client) -> None:
     """?category=AI&category=ai is one filter, not an unsatisfiable two."""
-    assert len(client.get("/feed/?category=AI&category=ai").json()) == 2
+    assert len(client.get("/api/feed/?category=AI&category=ai").json()) == 2
 
 
 def test_feed_items_carry_categories(client) -> None:
-    item = client.get("/feed/?category=ai&category=finance").json()[0]
+    item = client.get("/api/feed/?category=ai&category=finance").json()[0]
     assert sorted(item["categories"]) == ["ai", "finance"]
 
 
 def test_category_filter_composes_with_limit(client) -> None:
-    assert len(client.get("/feed/?category=ai&limit=1").json()) == 1
+    assert len(client.get("/api/feed/?category=ai&limit=1").json()) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -194,96 +194,96 @@ def test_category_filter_composes_with_limit(client) -> None:
 
 
 def test_saving_is_idempotent(client: TestClient) -> None:
-    assert client.post("/saved/1").status_code == 204
-    assert client.post("/saved/1").status_code == 204, "a double-click must not fail"
+    assert client.post("/api/saved/1").status_code == 204
+    assert client.post("/api/saved/1").status_code == 204, "a double-click must not fail"
 
-    saved = client.get("/saved/").json()
+    saved = client.get("/api/saved/").json()
     assert len(saved) == 1
 
 
 def test_unsaving_is_idempotent(client: TestClient) -> None:
-    client.post("/saved/1")
-    assert client.delete("/saved/1").status_code == 204
-    assert client.delete("/saved/1").status_code == 204, "already gone is not an error"
-    assert client.get("/saved/").json() == []
+    client.post("/api/saved/1")
+    assert client.delete("/api/saved/1").status_code == 204
+    assert client.delete("/api/saved/1").status_code == 204, "already gone is not an error"
+    assert client.get("/api/saved/").json() == []
 
 
 def test_unsaving_something_never_saved_succeeds(client: TestClient) -> None:
     """404 is about the article, not the saved state."""
-    assert client.delete("/saved/2").status_code == 204
+    assert client.delete("/api/saved/2").status_code == 204
 
 
 def test_saving_an_unknown_article_returns_404(client: TestClient) -> None:
-    res = client.post("/saved/9999")
+    res = client.post("/api/saved/9999")
     assert res.status_code == 404
     assert "9999" in res.json()["detail"]
 
 
 def test_unsaving_an_unknown_article_returns_404(client: TestClient) -> None:
-    assert client.delete("/saved/9999").status_code == 404
+    assert client.delete("/api/saved/9999").status_code == 404
 
 
 def test_saved_list_is_newest_saved_first(client: TestClient) -> None:
-    client.post("/saved/2")  # "Headline 1"
-    client.post("/saved/1")  # "Headline 0", saved later, so it sorts first
-    headlines = [item["headline"] for item in client.get("/saved/").json()]
+    client.post("/api/saved/2")  # "Headline 1"
+    client.post("/api/saved/1")  # "Headline 0", saved later, so it sorts first
+    headlines = [item["headline"] for item in client.get("/api/saved/").json()]
     assert headlines == ["Headline 0", "Headline 1"]
 
 
 def test_feed_items_report_saved_state(client: TestClient) -> None:
-    client.post("/saved/1")
+    client.post("/api/saved/1")
 
-    by_id = {i["article_id"]: i["saved"] for i in client.get("/feed/").json()}
+    by_id = {i["article_id"]: i["saved"] for i in client.get("/api/feed/").json()}
     assert by_id[1] is True
     assert by_id[2] is False
 
 
 def test_saving_does_not_remove_from_the_feed(client: TestClient) -> None:
-    before = len(client.get("/feed/").json())
-    client.post("/saved/1")
-    assert len(client.get("/feed/").json()) == before
+    before = len(client.get("/api/feed/").json())
+    client.post("/api/saved/1")
+    assert len(client.get("/api/feed/").json()) == before
 
 
 def test_saved_list_filters_by_category(client: TestClient) -> None:
-    client.post("/saved/1")  # ["ai", "finance"]
-    client.post("/saved/2")  # ["ai"]
+    client.post("/api/saved/1")  # ["ai", "finance"]
+    client.post("/api/saved/2")  # ["ai"]
 
-    assert len(client.get("/saved/?category=ai").json()) == 2
-    assert len(client.get("/saved/?category=ai&category=finance").json()) == 1
+    assert len(client.get("/api/saved/?category=ai").json()) == 2
+    assert len(client.get("/api/saved/?category=ai&category=finance").json()) == 1
 
 
 def test_saved_list_composes_with_limit(client: TestClient) -> None:
-    client.post("/saved/1")
-    client.post("/saved/2")
-    assert len(client.get("/saved/?category=ai&limit=1").json()) == 1
+    client.post("/api/saved/1")
+    client.post("/api/saved/2")
+    assert len(client.get("/api/saved/?category=ai&limit=1").json()) == 1
 
 
 def test_saved_list_rejects_unknown_category(client: TestClient) -> None:
-    res = client.get("/saved/?category=nonsense")
+    res = client.get("/api/saved/?category=nonsense")
     assert res.status_code == 400
     assert "nonsense" in res.json()["detail"]
 
 
 def test_scope_saved_counts_only_saved_articles(client: TestClient) -> None:
-    client.post("/saved/2")  # ["ai"] only
+    client.post("/api/saved/2")  # ["ai"] only
 
     feed = {f["category"]: f["count"]
-            for f in client.get("/categories/").json()["filters"]}
+            for f in client.get("/api/categories/").json()["filters"]}
     saved = {f["category"]: f["count"]
-             for f in client.get("/categories/?scope=saved").json()["filters"]}
+             for f in client.get("/api/categories/?scope=saved").json()["filters"]}
 
     assert feed["ai"] == 2 and feed["finance"] == 1
     assert saved["ai"] == 1 and saved["finance"] == 0
 
 
 def test_scope_defaults_to_feed(client: TestClient) -> None:
-    plain = client.get("/categories/").json()
-    explicit = client.get("/categories/?scope=feed").json()
+    plain = client.get("/api/categories/").json()
+    explicit = client.get("/api/categories/?scope=feed").json()
     assert plain == explicit
 
 
 def test_unknown_scope_returns_400(client: TestClient) -> None:
-    res = client.get("/categories/?scope=nonsense")
+    res = client.get("/api/categories/?scope=nonsense")
     assert res.status_code == 400
     assert "nonsense" in res.json()["detail"]
 
@@ -294,36 +294,36 @@ def test_unknown_scope_returns_400(client: TestClient) -> None:
 
 
 def test_rating_an_article_is_reported_in_the_feed(client: TestClient) -> None:
-    assert client.put("/articles/1/rating", json={"value": 1}).status_code == 204
+    assert client.put("/api/articles/1/rating", json={"value": 1}).status_code == 204
 
-    by_id = {i["article_id"]: i["rating"] for i in client.get("/feed/").json()}
+    by_id = {i["article_id"]: i["rating"] for i in client.get("/api/feed/").json()}
     assert by_id[1] == 1
     assert by_id[2] is None
 
 
 def test_rating_can_be_changed(client: TestClient) -> None:
-    client.put("/articles/1/rating", json={"value": 1})
-    client.put("/articles/1/rating", json={"value": -1})
+    client.put("/api/articles/1/rating", json={"value": 1})
+    client.put("/api/articles/1/rating", json={"value": -1})
 
-    by_id = {i["article_id"]: i["rating"] for i in client.get("/feed/").json()}
+    by_id = {i["article_id"]: i["rating"] for i in client.get("/api/feed/").json()}
     assert by_id[1] == -1, "latest wins"
 
 
 def test_rating_can_be_cleared(client: TestClient) -> None:
-    client.put("/articles/1/rating", json={"value": 1})
-    assert client.delete("/articles/1/rating").status_code == 204
+    client.put("/api/articles/1/rating", json={"value": 1})
+    assert client.delete("/api/articles/1/rating").status_code == 204
 
-    by_id = {i["article_id"]: i["rating"] for i in client.get("/feed/").json()}
+    by_id = {i["article_id"]: i["rating"] for i in client.get("/api/feed/").json()}
     assert by_id[1] is None
 
 
 def test_clearing_an_unrated_article_succeeds(client: TestClient) -> None:
     """404 is about the article, not the rating."""
-    assert client.delete("/articles/1/rating").status_code == 204
+    assert client.delete("/api/articles/1/rating").status_code == 204
 
 
 def test_rating_rejects_a_neutral_value(client: TestClient) -> None:
-    res = client.put("/articles/1/rating", json={"value": 0})
+    res = client.put("/api/articles/1/rating", json={"value": 0})
     assert res.status_code == 400
 
     # Both halves, and the value in context: a bare `"0" in detail` is
@@ -335,34 +335,34 @@ def test_rating_rejects_a_neutral_value(client: TestClient) -> None:
 
 
 def test_rating_an_unknown_article_returns_404(client: TestClient) -> None:
-    res = client.put("/articles/9999/rating", json={"value": 1})
+    res = client.put("/api/articles/9999/rating", json={"value": 1})
     assert res.status_code == 404
     assert "9999" in res.json()["detail"]
 
 
 def test_clearing_an_unknown_article_returns_404(client: TestClient) -> None:
-    assert client.delete("/articles/9999/rating").status_code == 404
+    assert client.delete("/api/articles/9999/rating").status_code == 404
 
 
 @pytest.mark.parametrize("kind", ["expand", "click_through"])
 def test_interactions_are_recorded(client: TestClient, kind: str) -> None:
-    res = client.post("/articles/1/interactions", json={"kind": kind})
+    res = client.post("/api/articles/1/interactions", json={"kind": kind})
     assert res.status_code == 204
 
 
 def test_interaction_rejects_an_unknown_kind(client: TestClient) -> None:
     """Validated in the API, not left to the CHECK constraint to raise a 500."""
-    res = client.post("/articles/1/interactions", json={"kind": "nonsense"})
+    res = client.post("/api/articles/1/interactions", json={"kind": "nonsense"})
     assert res.status_code == 400
     assert "nonsense" in res.json()["detail"]
 
 
 def test_interaction_for_an_unknown_article_returns_404(client: TestClient) -> None:
-    res = client.post("/articles/9999/interactions", json={"kind": "expand"})
+    res = client.post("/api/articles/9999/interactions", json={"kind": "expand"})
     assert res.status_code == 404
 
 
 def test_sources_report_unusable_count(client: TestClient, seeded: StateStore) -> None:
     """Zero must be present, never absent — an absent key renders undefined."""
-    rows = client.get("/sources/").json()
+    rows = client.get("/api/sources/").json()
     assert rows[0]["unusable_count"] == 0

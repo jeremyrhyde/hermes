@@ -78,22 +78,22 @@ async def _rate(store: StateStore, n: int) -> None:
 
 def test_profile_is_empty_when_unseeded(client: TestClient) -> None:
     """Not a 404: an empty textarea is where the first profile gets written."""
-    body = client.get("/profile/").json()
+    body = client.get("/api/profile/").json()
     assert body["version"] is None
     assert body["body"] == ""
 
 
 def test_editing_creates_a_new_version(client: TestClient) -> None:
-    first = client.put("/profile/", json={"body": "one"}).json()["version"]
-    second = client.put("/profile/", json={"body": "two"}).json()["version"]
+    first = client.put("/api/profile/", json={"body": "one"}).json()["version"]
+    second = client.put("/api/profile/", json={"body": "two"}).json()["version"]
 
     assert first != second
-    assert client.get("/profile/").json()["body"] == "two"
+    assert client.get("/api/profile/").json()["body"] == "two"
 
 
 def test_an_empty_profile_is_rejected(client: TestClient) -> None:
     """A blank profile would score every article against nothing."""
-    assert client.put("/profile/", json={"body": "   "}).status_code == 400
+    assert client.put("/api/profile/", json={"body": "   "}).status_code == 400
 
 
 async def test_review_reports_insufficient_below_threshold(
@@ -101,7 +101,7 @@ async def test_review_reports_insufficient_below_threshold(
 ) -> None:
     await _rate(store, 3)
 
-    body = client.get("/profile/review").json()
+    body = client.get("/api/profile/review").json()
     assert body["state"] == "insufficient"
     assert body["count"] == 3
     assert body["threshold"] == 20
@@ -114,7 +114,7 @@ async def test_review_reports_ready_at_the_threshold(
     await store.set_preference("distill_threshold", "5")
     await _rate(store, 5)
 
-    assert client.get("/profile/review").json()["state"] == "ready"
+    assert client.get("/api/profile/review").json()["state"] == "ready"
 
 
 async def test_generating_below_the_threshold_is_rejected(
@@ -122,7 +122,7 @@ async def test_generating_below_the_threshold_is_rejected(
 ) -> None:
     await _rate(store, 1)
 
-    res = client.post("/profile/review")
+    res = client.post("/api/profile/review")
     assert res.status_code == 400
     assert distiller.calls == 0, "no API call below the threshold"
 
@@ -134,10 +134,10 @@ async def test_generating_produces_a_pending_proposal(
     await store.create_profile_version("live", "stated", True)
     await _rate(store, 5)
 
-    assert client.post("/profile/review").status_code == 200
+    assert client.post("/api/profile/review").status_code == 200
     assert distiller.calls == 1
 
-    body = client.get("/profile/review").json()
+    body = client.get("/api/profile/review").json()
     assert body["state"] == "pending"
     assert body["proposal"]["body"] == "# Distilled\n\nnew body"
 
@@ -148,9 +148,9 @@ async def test_a_second_proposal_is_refused(
     """Two diffs against the same base are jointly incoherent."""
     await store.set_preference("distill_threshold", "5")
     await _rate(store, 5)
-    client.post("/profile/review")
+    client.post("/api/profile/review")
 
-    assert client.post("/profile/review").status_code == 409
+    assert client.post("/api/profile/review").status_code == 409
 
 
 async def test_a_pending_proposal_is_not_live(
@@ -159,21 +159,21 @@ async def test_a_pending_proposal_is_not_live(
     await store.set_preference("distill_threshold", "5")
     await store.create_profile_version("live", "stated", True)
     await _rate(store, 5)
-    client.post("/profile/review")
+    client.post("/api/profile/review")
 
-    assert client.get("/profile/").json()["body"] == "live"
+    assert client.get("/api/profile/").json()["body"] == "live"
 
 
 async def test_approving_makes_it_live(store: StateStore, client: TestClient) -> None:
     await store.set_preference("distill_threshold", "5")
     await store.create_profile_version("live", "stated", True)
     await _rate(store, 5)
-    version = client.post("/profile/review").json()["version"]
+    version = client.post("/api/profile/review").json()["version"]
 
-    res = client.post(f"/profile/review/{version}/approve", json={"rescore": False})
+    res = client.post(f"/api/profile/review/{version}/approve", json={"rescore": False})
     assert res.status_code == 200
 
-    assert client.get("/profile/").json()["body"] == "# Distilled\n\nnew body"
+    assert client.get("/api/profile/").json()["body"] == "# Distilled\n\nnew body"
 
 
 async def test_approving_with_an_edit_stores_the_edit(
@@ -181,12 +181,12 @@ async def test_approving_with_an_edit_stores_the_edit(
 ) -> None:
     await store.set_preference("distill_threshold", "5")
     await _rate(store, 5)
-    version = client.post("/profile/review").json()["version"]
+    version = client.post("/api/profile/review").json()["version"]
 
-    client.post(f"/profile/review/{version}/approve",
+    client.post(f"/api/profile/review/{version}/approve",
                 json={"body": "my own wording", "rescore": False})
 
-    assert client.get("/profile/").json()["body"] == "my own wording"
+    assert client.get("/api/profile/").json()["body"] == "my own wording"
 
 
 async def test_approving_with_rescore_queues_the_corpus(
@@ -194,9 +194,9 @@ async def test_approving_with_rescore_queues_the_corpus(
 ) -> None:
     await store.set_preference("distill_threshold", "5")
     await _rate(store, 5)
-    version = client.post("/profile/review").json()["version"]
+    version = client.post("/api/profile/review").json()["version"]
 
-    res = client.post(f"/profile/review/{version}/approve", json={"rescore": True})
+    res = client.post(f"/api/profile/review/{version}/approve", json={"rescore": True})
 
     assert res.json()["rescored"] == 5
 
@@ -207,12 +207,12 @@ async def test_rejecting_leaves_the_profile_alone(
     await store.set_preference("distill_threshold", "5")
     await store.create_profile_version("live", "stated", True)
     await _rate(store, 5)
-    version = client.post("/profile/review").json()["version"]
+    version = client.post("/api/profile/review").json()["version"]
 
-    assert client.post(f"/profile/review/{version}/reject").status_code == 204
+    assert client.post(f"/api/profile/review/{version}/reject").status_code == 204
 
-    assert client.get("/profile/").json()["body"] == "live"
-    assert client.get("/profile/review").json()["state"] == "insufficient"
+    assert client.get("/api/profile/").json()["body"] == "live"
+    assert client.get("/api/profile/review").json()["state"] == "insufficient"
 
 
 async def test_resolving_twice_is_a_conflict(
@@ -221,22 +221,22 @@ async def test_resolving_twice_is_a_conflict(
     """The panel is stale; the UI should refetch."""
     await store.set_preference("distill_threshold", "5")
     await _rate(store, 5)
-    version = client.post("/profile/review").json()["version"]
-    client.post(f"/profile/review/{version}/approve", json={"rescore": False})
+    version = client.post("/api/profile/review").json()["version"]
+    client.post(f"/api/profile/review/{version}/approve", json={"rescore": False})
 
-    res = client.post(f"/profile/review/{version}/reject")
+    res = client.post(f"/api/profile/review/{version}/reject")
     assert res.status_code == 409
 
 
 def test_threshold_is_a_writable_knob(client: TestClient) -> None:
-    assert client.put("/preferences/distill_threshold",
+    assert client.put("/api/preferences/distill_threshold",
                       json={"value": 50}).status_code == 204
-    assert client.get("/preferences/").json()["distill_threshold"] == 50
+    assert client.get("/api/preferences/").json()["distill_threshold"] == 50
 
 
 @pytest.mark.parametrize("value", [4, 201])
 def test_threshold_outside_5_200_is_rejected(client: TestClient, value: int) -> None:
-    assert client.put("/preferences/distill_threshold",
+    assert client.put("/api/preferences/distill_threshold",
                       json={"value": value}).status_code == 400
 
 
@@ -278,15 +278,15 @@ async def test_approving_a_blank_edit_is_rejected(
     await store.set_preference("distill_threshold", "5")
     await store.create_profile_version("live", "stated", True)
     await _rate(store, 5)
-    version = client.post("/profile/review").json()["version"]
+    version = client.post("/api/profile/review").json()["version"]
 
-    res = client.post(f"/profile/review/{version}/approve",
+    res = client.post(f"/api/profile/review/{version}/approve",
                       json={"body": "   ", "rescore": False})
 
     assert res.status_code == 400
-    assert client.get("/profile/").json()["body"] == "live"
+    assert client.get("/api/profile/").json()["body"] == "live"
     # Still reviewable: a rejected edit must not consume the proposal.
-    assert client.get("/profile/review").json()["state"] == "pending"
+    assert client.get("/api/profile/review").json()["state"] == "pending"
 
 
 async def test_a_pending_proposal_outranks_a_ready_count(
@@ -302,7 +302,7 @@ async def test_a_pending_proposal_outranks_a_ready_count(
     """
     await store.set_preference("distill_threshold", "5")
     await _rate(store, 5)
-    client.post("/profile/review")
+    client.post("/api/profile/review")
 
     # Re-rated with a timestamp *after* the proposal on purpose. `_rate` stamps
     # every rating with a fixed NOW that already predates the row the proposal
@@ -312,16 +312,16 @@ async def test_a_pending_proposal_outranks_a_ready_count(
     for row in await store.rated_articles():
         await store.rate_article(row["article_id"], -1, later)
 
-    body = client.get("/profile/review").json()
+    body = client.get("/api/profile/review").json()
 
     assert body["state"] == "pending"
     assert body["count"] == 5, "the true count, not one suppressed by the state"
 
 
 def test_a_stated_profile_reports_its_kind(client: TestClient) -> None:
-    version = client.put("/profile/", json={"body": "mine"}).json()["version"]
+    version = client.put("/api/profile/", json={"body": "mine"}).json()["version"]
 
-    body = client.get("/profile/").json()
+    body = client.get("/api/profile/").json()
     assert body["version"] == version
     assert body["kind"] == "stated"
 
@@ -332,12 +332,12 @@ async def test_an_approved_proposal_reports_its_kind(
     """Editing on approval does not make it the reader's own writing."""
     await store.set_preference("distill_threshold", "5")
     await _rate(store, 5)
-    version = client.post("/profile/review").json()["version"]
+    version = client.post("/api/profile/review").json()["version"]
 
-    client.post(f"/profile/review/{version}/approve",
+    client.post(f"/api/profile/review/{version}/approve",
                 json={"body": "my own wording", "rescore": False})
 
-    assert client.get("/profile/").json()["kind"] == "distilled"
+    assert client.get("/api/profile/").json()["kind"] == "distilled"
 
 
 async def test_generating_without_a_distiller_is_unavailable(
@@ -347,7 +347,7 @@ async def test_generating_without_a_distiller_is_unavailable(
     await store.set_preference("distill_threshold", "5")
     await _rate(store, 5)
 
-    assert _client_with(store, None).post("/profile/review").status_code == 503
+    assert _client_with(store, None).post("/api/profile/review").status_code == 503
 
 
 async def test_a_failed_distillation_is_a_bad_gateway(store: StateStore) -> None:
@@ -355,7 +355,7 @@ async def test_a_failed_distillation_is_a_bad_gateway(store: StateStore) -> None
     await store.set_preference("distill_threshold", "5")
     await _rate(store, 5)
 
-    res = _client_with(store, FailingDistiller()).post("/profile/review")
+    res = _client_with(store, FailingDistiller()).post("/api/profile/review")
 
     assert res.status_code == 502
     assert "max_tokens" in res.json()["detail"], "the panel needs a reason to show"
@@ -368,7 +368,7 @@ async def test_a_proposal_records_the_distillation_prompt(
     """Which prompt drafted the body stops being readable once it is edited."""
     await store.set_preference("distill_threshold", "5")
     await _rate(store, 5)
-    version = client.post("/profile/review").json()["version"]
+    version = client.post("/api/profile/review").json()["version"]
 
     cur = await store.db.execute(
         "SELECT distill_version FROM profile_versions WHERE version = ?", (version,)
@@ -391,6 +391,6 @@ async def test_the_corpus_sent_to_the_distiller_is_capped(
     await store.set_preference("distill_threshold", "5")
     await _rate(store, 5)
 
-    _client_with(store, Recorder()).post("/profile/review")
+    _client_with(store, Recorder()).post("/api/profile/review")
 
     assert [row["headline"] for row in seen] == ["H4"]

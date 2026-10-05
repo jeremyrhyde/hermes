@@ -17,12 +17,11 @@ than reaching into ``app.state`` inline.
 URL layout
 ----------
 
-API routes live at the root: ``/ws`` for the WebSocket, ``/feed/`` for the
-rendered feed, ``/sources/`` for source health and manual polls, plus the
-domain routers added as the feature set grows. Static frontend assets are
-mounted under ``/ui/`` so they cannot collide with API paths. The mount is
-optional — if ``settings.WEB_DIR`` does not exist the app still boots and a
-warning is logged.
+Pantheon module contract: API routes live under ``/api`` (``/api/feed/``,
+``/api/saved/``, ..., ``/api/ws``); ``/health`` stays at the root; the static
+UI is served at ``/`` by :func:`mount_ui`, which must be the last thing
+registered. The mount is optional — if ``settings.WEB_DIR`` does not exist
+the app still boots and a warning is logged.
 """
 
 from __future__ import annotations
@@ -955,15 +954,20 @@ def create_app(
     app.state.category_filters = category_filters or []
     app.state.distiller = distiller
 
-    app.include_router(_build_feed_router())
-    app.include_router(_build_saved_router())
-    app.include_router(_build_ranked_router())
-    app.include_router(_build_preferences_router())
-    app.include_router(_build_profile_router())
-    app.include_router(_build_articles_router())
-    app.include_router(_build_categories_router())
-    app.include_router(_build_sources_router())
-    app.include_router(_build_ws_router())
+    api = APIRouter(prefix="/api")
+    for build in (
+        _build_feed_router,
+        _build_saved_router,
+        _build_ranked_router,
+        _build_preferences_router,
+        _build_profile_router,
+        _build_articles_router,
+        _build_categories_router,
+        _build_sources_router,
+        _build_ws_router,
+    ):
+        api.include_router(build())
+    app.include_router(api)
 
     if mount_static and settings is not None:
         web_dir = Path(settings.WEB_DIR)

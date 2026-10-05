@@ -145,11 +145,11 @@ health:
 
 .PHONY: feed
 feed:
-	@curl -sS "$(HERMES_HOST)/feed/?limit=10" | python3 -m json.tool
+	@curl -sS "$(HERMES_HOST)/api/feed/?limit=10" | python3 -m json.tool
 
 .PHONY: sources
 sources:
-	@curl -sS $(HERMES_HOST)/sources/ | python3 -m json.tool
+	@curl -sS $(HERMES_HOST)/api/sources/ | python3 -m json.tool
 
 .PHONY: poll-now
 poll-now:
@@ -158,4 +158,4 @@ poll-now:
 		echo "  List them with: make sources"; \
 		exit 1; \
 	fi
-	@curl -sS -X POST $(HERMES_HOST)/sources/$(ID)/poll && echo ""
+	@curl -sS -X POST $(HERMES_HOST)/api/sources/$(ID)/poll && echo ""

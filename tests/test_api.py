@@ -84,7 +84,7 @@ def test_websocket_endpoint_accepts_connections(
 ) -> None:
     """The /ws route upgrades and registers the client with the manager."""
 
-    with client.websocket_connect("/ws"):
+    with client.websocket_connect("/api/ws"):
         assert ws_manager.active_count == 1
 
 
