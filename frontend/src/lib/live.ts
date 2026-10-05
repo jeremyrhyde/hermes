@@ -63,6 +63,7 @@ export class LiveClient {
 
   connect(): void {
     this.stopped = false;
+    if (this.socket) return;
     this.clearTimer();
     const Impl = this.opts.WebSocketImpl ?? (globalThis.WebSocket as unknown as SocketCtor);
     let ws: SocketLike;
@@ -75,14 +76,25 @@ export class LiveClient {
     }
     this.socket = ws;
     ws.onopen = () => {
+      if (this.socket !== ws) return;
       const reconnect = this.everOpened;
       this.everOpened = true;
       this.attempt = 0;
       this.isOpen = true;
       this.opts.onStatus?.(true);
-      if (reconnect) for (const fn of this.reconnectHooks) fn();
+      if (reconnect) {
+        for (const fn of this.reconnectHooks) {
+          try {
+            fn();
+          } catch (err) {
+            console.error('live: reconnect hook failed', err);
+          }
+        }
+      }
     };
-    ws.onmessage = (msg) => this.dispatch(msg.data);
+    ws.onmessage = (msg) => {
+      if (this.socket === ws) this.dispatch(msg.data);
+    };
     ws.onclose = () => {
       if (this.socket !== ws) return;
       this.socket = null;

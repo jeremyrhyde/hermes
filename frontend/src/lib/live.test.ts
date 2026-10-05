@@ -125,4 +125,67 @@ describe('LiveClient', () => {
     c.retryNow(); // a socket is already connecting
     expect(FakeSocket.all).toHaveLength(2);
   });
+
+  it('ignores a second connect() while a socket exists', () => {
+    const statuses: boolean[] = [];
+    const c = client(statuses);
+    const seen: unknown[] = [];
+    c.on('x', (e) => seen.push(e.type));
+    c.connect();
+    last().open();
+    c.connect();
+    expect(FakeSocket.all).toHaveLength(1);
+    last().send('{"type":"x"}');
+    expect(seen).toEqual(['x']);
+    expect(statuses).toEqual([true]);
+  });
+
+  it('never reconnects after disconnect while a retry is pending', () => {
+    const c = client();
+    c.connect();
+    last().close(); // retry scheduled for 1s
+    c.disconnect();
+    vi.advanceTimersByTime(60000);
+    expect(FakeSocket.all).toHaveLength(1);
+  });
+
+  it('retryNow cancels the pending retry timer', () => {
+    const c = client();
+    c.connect();
+    last().close(); // retry scheduled for 1s
+    c.retryNow();
+    expect(FakeSocket.all).toHaveLength(2);
+    vi.advanceTimersByTime(1000);
+    expect(FakeSocket.all).toHaveLength(2);
+  });
+
+  it('retries with backoff when the WebSocket constructor throws', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    let fail = true;
+    class Flaky extends FakeSocket {
+      constructor(url: string) {
+        if (fail) { fail = false; throw new Error('SyntaxError'); }
+        super(url);
+      }
+    }
+    const c = new LiveClient({ url: 'ws://h/api/ws', WebSocketImpl: Flaky, random: () => 0.5 });
+    c.connect();
+    expect(FakeSocket.all).toHaveLength(0);
+    vi.advanceTimersByTime(1000);
+    expect(FakeSocket.all).toHaveLength(1);
+  });
+
+  it('a throwing reconnect hook does not stop the others', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const c = client();
+    const ok = vi.fn();
+    c.onReconnect(() => { throw new Error('boom'); });
+    c.onReconnect(ok);
+    c.connect();
+    last().open();
+    last().close();
+    vi.advanceTimersByTime(1000);
+    last().open();
+    expect(ok).toHaveBeenCalledTimes(1);
+  });
 });
