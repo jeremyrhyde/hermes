@@ -44,7 +44,8 @@ const end = (id: number) => {
 const find = (id: number) => feed.items.find((i) => i.article_id === id);
 
 /** Load a list with its filter counts. Throws when the list request fails, so
- *  boot can show the FatalScreen; everything after boot uses reloadFeed. */
+ *  callers decide what to do: boot (via loadFor) shows the FatalScreen,
+ *  FeedScreen (via loadFor) shows a toast with Retry, reloadFeed toasts. */
 export async function loadFeed(mode: Mode, cats: string[]): Promise<void> {
   feed.target = { mode, cats };
   const id = seq.next();

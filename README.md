@@ -197,5 +197,8 @@ changes for that: Hermes always listens on **port 8002**, serves its UI at
 | UI | `http://<host>:8002/` | `http://<main-pi>:8000/hermes/` |
 | Service | `make service-install` | installed by Pantheon's `make service-install-all` |
 
+To upgrade a standalone install, `git pull` and then `make service-restart`: it
+rebuilds the UI (Node 20+) and restarts the service.
+
 Inside Pantheon, Hermes is the news feed: Pantheon's home screen links to
 it, and a later home-screen tile can read `hermes/api/ranked/` directly.

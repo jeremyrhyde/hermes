@@ -10,7 +10,7 @@
 #   ./scripts/install-server.sh --uninstall  # stop + remove
 #   ./scripts/install-server.sh --status
 #   ./scripts/install-server.sh --logs
-#   ./scripts/install-server.sh --restart
+#   ./scripts/install-server.sh --restart    # rebuild the UI, then restart
 #
 # Idempotent — running it twice is safe.
 
@@ -72,7 +72,12 @@ linux() {
       ;;
     status)  systemctl --user status "$SERVICE_NAME" --no-pager -l || true ;;
     logs)    journalctl --user -u "$SERVICE_NAME" -f ;;
-    restart) systemctl --user restart "$SERVICE_NAME" && echo "Restarted $SERVICE_NAME" ;;
+    restart)
+      echo "[1/2] UI build..."
+      build_ui
+      echo "[2/2] restarting..."
+      systemctl --user restart "$SERVICE_NAME" && echo "Restarted $SERVICE_NAME"
+      ;;
   esac
 }
 
@@ -106,7 +111,12 @@ macos() {
         | grep -E '^\s*(state|pid|last exit code) =' || echo "not installed"
       ;;
     logs)    tail -f "$LOG_DIR/hermes.log" ;;
-    restart) launchctl kickstart -k "$target/$LAUNCHD_LABEL" && echo "Restarted $LAUNCHD_LABEL" ;;
+    restart)
+      echo "[1/2] UI build..."
+      build_ui
+      echo "[2/2] restarting..."
+      launchctl kickstart -k "$target/$LAUNCHD_LABEL" && echo "Restarted $LAUNCHD_LABEL"
+      ;;
   esac
 }
 

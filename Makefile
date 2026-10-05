@@ -58,7 +58,7 @@ help:
 	@echo "  make service-uninstall  Stop and remove it"
 	@echo "  make service-status     Show whether it is running"
 	@echo "  make service-logs       Follow its logs"
-	@echo "  make service-restart    Restart it (e.g. after a git pull)"
+	@echo "  make service-restart    Rebuild the UI and restart (e.g. after a git pull)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make run-dev PORT=9000"
