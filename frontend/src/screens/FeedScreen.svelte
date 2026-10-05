@@ -26,6 +26,7 @@
 
   function load(): void {
     const n = ++attempt;
+    failed = null;
     const wantMode = mode;
     const wantCats = untrack(() => cats);
     loadFor(wantMode, wantCats).then(
@@ -50,7 +51,7 @@
     const wantMode = mode;
     void catsKey; // track the values, not the array
     const fresh = untrack(() => feed.loaded && feed.mode === wantMode && sameCats(feed.cats, cats)
-      && !feed.stale && feed.pending === 0);
+      && feed.target.mode === wantMode && sameCats(feed.target.cats, cats) && !feed.stale && feed.pending === 0);
     if (!fresh) load();
   });
 
@@ -76,16 +77,16 @@
   </div>
 
   {#if feed.items.length === 0}
-    {#if mode === 'feed' && cats.length === 0 && feed.gating.total === 0}
+    {#if mode === 'feed' && feed.cats.length === 0 && feed.gating.total === 0}
       <p class="empty">Nothing yet. Add feeds to <code>sources.yaml</code>, then <code>make poll-now ID=&lt;source-id&gt;</code>.</p>
-    {:else if mode === 'feed' && cats.length === 0}
+    {:else if mode === 'feed' && feed.cats.length === 0}
       <p class="empty">Nothing is on display — the rows below say why.</p>
     {:else if mode === 'feed'}
       <div class="empty">
-        <span>{cats.length === 1 ? 'No articles match this filter.' : `No articles match all ${cats.length} filters.`}</span>
+        <span>{feed.cats.length === 1 ? 'No articles match this filter.' : `No articles match all ${feed.cats.length} filters.`}</span>
         <button type="button" class="btn quiet" onclick={clear}>Clear filters</button>
       </div>
-    {:else if cats.length === 0}
+    {:else if feed.cats.length === 0}
       <p class="empty">Nothing saved yet. Star an article in the Feed to keep it here.</p>
     {:else}
       <div class="empty">
