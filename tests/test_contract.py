@@ -1,5 +1,5 @@
 """Pantheon module contract: unique port, UI at `/`, API under `/api/`,
-`/health` at the root, and only relative URLs in the web UI — so the same
+`/health` at the root, and only relative URLs in the frontend — so the same
 files work standalone (http://pi:8002/) and behind Pantheon's gateway
 (http://pi:8000/hermes/). See pantheon/docs/module-contract.md."""
 
@@ -59,27 +59,54 @@ def test_ui_served_at_root_without_shadowing_health(tmp_path):
     assert client.get("/ui/").status_code == 404
 
 
-WEB = Path(__file__).resolve().parent.parent / "web"
+FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 
-# Root-absolute URLs break under a gateway prefix (/hermes/...).
+# Ported from Apollo's tests/test_contract.py, plus `new URL('/…'`.
 _ABSOLUTE = [
     re.compile(r'(?:href|src)="/(?!/)'),
-    re.compile(r"""(?:fetch|_json)\(\s*['"`]/(?!/)"""),
+    re.compile(r"""fetch\(\s*['"`]/(?!/)"""),
     re.compile(r'"(?:start_url|scope|src)":\s*"/(?!/)'),
     re.compile(r"location\.host\}?/"),
-    re.compile(r"""['"`]/(?:api|health|ws)\b"""),
+    re.compile(r"""base:\s*['"]/"""),
+    re.compile(r"""new URL\(\s*['"`]/(?!/)"""),
 ]
+# Vite's dev entry; rewritten relative to `base` at build time.
+_ALLOWED = {'<script type="module" src="/src/main.ts"></script>'}
 
 
-def test_web_ui_uses_only_relative_urls():
+def test_frontend_uses_only_relative_urls():
+    files = [FRONTEND / "index.html", FRONTEND / "vite.config.ts",
+             *sorted((FRONTEND / "public").glob("*.webmanifest")),
+             *sorted((FRONTEND / "src").rglob("*.ts")),
+             *sorted((FRONTEND / "src").rglob("*.svelte"))]
     offenders = []
-    for f in sorted(WEB.rglob("*")):
-        if f.suffix not in {".html", ".js", ".webmanifest"}:
-            continue
+    for f in files:
         for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            if line.strip() in _ALLOWED:
+                continue
             if any(p.search(line) for p in _ABSOLUTE):
-                offenders.append(f"{f.relative_to(WEB)}:{n}: {line.strip()}")
+                offenders.append(f"{f.relative_to(FRONTEND)}:{n}: {line.strip()}")
     assert offenders == []
+
+
+def test_default_web_dir_is_the_built_frontend(monkeypatch):
+    monkeypatch.delenv("WEB_DIR", raising=False)
+    assert Settings(_env_file=None).WEB_DIR == "./frontend/dist"
+
+
+def test_hashed_assets_cache_forever_and_everything_else_revalidates(tmp_path):
+    settings = _settings(tmp_path)
+    assets = Path(settings.WEB_DIR) / "assets"
+    assets.mkdir()
+    (assets / "index-abc123.js").write_text("console.log(1)")
+    (Path(settings.WEB_DIR) / "manifest.webmanifest").write_text("{}")
+    client = TestClient(build_app(settings))
+
+    asset = client.get("/assets/index-abc123.js")
+    assert asset.status_code == 200
+    assert asset.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert client.get("/").headers["cache-control"] == "no-cache"
+    assert client.get("/manifest.webmanifest").headers["cache-control"] == "no-cache"
 
 
 def test_stray_websocket_is_closed_cleanly_by_the_ui_mount(tmp_path):

@@ -894,15 +894,29 @@ def _build_ws_router() -> APIRouter:
 
 
 class _UIFiles(StaticFiles):
-    """Static UI at "/". It also receives WebSocket connects that match no
-    route (e.g. an old cached page retrying /ws); close those cleanly instead
-    of letting StaticFiles assert on a non-HTTP scope."""
+    """The built UI at "/".
+
+    Vite's hashed files under ``assets/`` never change, so they cache forever;
+    everything else (``index.html``, the manifest, icons) is revalidated on
+    every load so a rebuild is picked up. It also receives WebSocket connects
+    that match no route (e.g. an old cached page retrying /ws); close those
+    cleanly instead of letting StaticFiles assert on a non-HTTP scope."""
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] == "websocket":
             await WebSocket(scope, receive, send).close()
             return
         await super().__call__(scope, receive, send)
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        relative = Path(full_path).resolve().relative_to(Path(self.directory).resolve())
+        response.headers["Cache-Control"] = (
+            "public, max-age=31536000, immutable"
+            if relative.parts[0] == "assets"
+            else "no-cache"
+        )
+        return response
 
 
 def mount_ui(app: FastAPI, settings: "Settings") -> None:
@@ -915,7 +929,8 @@ def mount_ui(app: FastAPI, settings: "Settings") -> None:
     web_dir = Path(settings.WEB_DIR)
     if not web_dir.is_dir():
         logger.warning(
-            "Static UI directory %s does not exist; skipping mount.", web_dir
+            "Static UI directory %s does not exist; skipping mount. "
+            "Run `make build` to build the frontend.", web_dir
         )
         return
     app.mount(
