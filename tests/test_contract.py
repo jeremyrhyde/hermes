@@ -55,3 +55,28 @@ def test_ui_served_at_root_without_shadowing_health(tmp_path):
     assert "contract-test-ui" in root.text
     assert client.get("/health").json()["status"] == "ok"
     assert client.get("/ui/").status_code == 404
+
+
+import re
+
+WEB = Path(__file__).resolve().parent.parent / "web"
+
+# Root-absolute URLs break under a gateway prefix (/hermes/...).
+_ABSOLUTE = [
+    re.compile(r'(?:href|src)="/(?!/)'),
+    re.compile(r"""(?:fetch|_json)\(\s*['"`]/(?!/)"""),
+    re.compile(r'"(?:start_url|scope|src)":\s*"/(?!/)'),
+    re.compile(r"location\.host\}?/"),
+    re.compile(r"""['"`]/(?:api|health|ws)\b"""),
+]
+
+
+def test_web_ui_uses_only_relative_urls():
+    offenders = []
+    for f in sorted(WEB.rglob("*")):
+        if f.suffix not in {".html", ".js", ".webmanifest"}:
+            continue
+        for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            if any(p.search(line) for p in _ABSOLUTE):
+                offenders.append(f"{f.relative_to(WEB)}:{n}: {line.strip()}")
+    assert offenders == []

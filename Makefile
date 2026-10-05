@@ -119,7 +119,7 @@ run-dev:
 
 .PHONY: open
 open:
-	@python3 -c "import webbrowser; webbrowser.open('http://localhost:$(PORT)/ui/')"
+	@python3 -c "import webbrowser; webbrowser.open('http://localhost:$(PORT)/')"
 
 # ---------------------------------------------------------------------------
 # Tests

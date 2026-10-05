@@ -205,8 +205,8 @@ function app() {
       // they run alongside refreshFiltered rather than inside it.
       const filtered = this.refreshFiltered();
       const [sources, health] = await Promise.allSettled([
-        this._json('/sources/'),
-        this._json('/health'),
+        this._json('api/sources/'),
+        this._json('health'),
       ]);
 
       if (sources.status === 'fulfilled') this.sources = sources.value || [];
@@ -247,15 +247,15 @@ function app() {
       // displayed is the max_displayed knob's business, and a query parameter
       // beside it would be a second, contradicting answer.
       const listPath = saved
-        ? `/saved/?limit=100${this._categoryQuery()}`
-        : `/ranked/${this._categoryQuery('?')}`;
+        ? `api/saved/?limit=100${this._categoryQuery()}`
+        : `api/ranked/${this._categoryQuery('?')}`;
       const requests = [
         this._json(listPath),
-        this._json(`/categories/?scope=${saved ? 'saved' : 'feed'}${this._categoryQuery()}`),
+        this._json(`api/categories/?scope=${saved ? 'saved' : 'feed'}${this._categoryQuery()}`),
       ];
       // Unfiltered and capped at one row: this asks "is anything pinned at
       // all", which the filtered list above cannot answer.
-      if (saved) requests.push(this._json('/saved/?limit=1'));
+      if (saved) requests.push(this._json('api/saved/?limit=1'));
 
       const [list, categories, anySaved] = await Promise.allSettled(requests);
       if (seq !== this._filterSeq) return;  // superseded by a later click
@@ -331,9 +331,9 @@ function app() {
     async refreshProfile() {
       const seq = this._filterSeq;
       const [prefs, profile, review] = await Promise.allSettled([
-        this._json('/preferences/'),
-        this._json('/profile/'),
-        this._json('/profile/review'),
+        this._json('api/preferences/'),
+        this._json('api/profile/'),
+        this._json('api/profile/review'),
       ]);
       if (seq !== this._filterSeq) return;  // superseded — a knob moved, or a tab
 
@@ -635,7 +635,7 @@ function app() {
       if (removing) list.splice(idx, 1);
 
       try {
-        await this._json(`/saved/${item.article_id}`, {
+        await this._json(`api/saved/${item.article_id}`, {
           method: next ? 'POST' : 'DELETE',
         });
         if (next) this.hasAnySaved = true;
@@ -697,7 +697,7 @@ function app() {
       // would otherwise paint a gate the user has already moved off.
       this._filterSeq++;
       try {
-        await this._json(`/preferences/${key}`, {
+        await this._json(`api/preferences/${key}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ value }),
@@ -781,7 +781,7 @@ function app() {
       this.savingProfile = true;
       let version;
       try {
-        const res = await this._json('/profile/', {
+        const res = await this._json('api/profile/', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ body }),
@@ -823,7 +823,7 @@ function app() {
       this.generating = true;
       let conflict = false;
       try {
-        await this._json('/profile/review', { method: 'POST' });
+        await this._json('api/profile/review', { method: 'POST' });
       } catch (err) {
         console.error('generateProposal', err);
         // Cleared before the guard, and on every path: this flag is the
@@ -866,7 +866,7 @@ function app() {
       }
       const rescore = this.rescore;
       const result = await this._resolve(
-        `/profile/review/${encodeURIComponent(version)}/approve`,
+        `api/profile/review/${encodeURIComponent(version)}/approve`,
         { body, rescore },
         'Could not approve the proposal.',
       );
@@ -903,7 +903,7 @@ function app() {
       this.reviewError = '';
       this.reviewNotice = '';
       const result = await this._resolve(
-        `/profile/review/${encodeURIComponent(version)}/reject`,
+        `api/profile/review/${encodeURIComponent(version)}/reject`,
         null,
         'Could not reject the proposal.',
       );
@@ -971,7 +971,7 @@ function app() {
      * Signals are logged but unused in ranking (spec 7.3, research finding
      * R10); phase 4 decides whether to trust them. */
     _logInteraction(item, kind) {
-      this._json(`/articles/${item.article_id}/interactions`, {
+      this._json(`api/articles/${item.article_id}/interactions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ kind }),
@@ -988,7 +988,7 @@ function app() {
       const next = previous === value ? null : value;
       item.rating = next;
 
-      const path = `/articles/${item.article_id}/rating`;
+      const path = `api/articles/${item.article_id}/rating`;
       const opts = next === null
         ? { method: 'DELETE' }
         : {
@@ -1007,8 +1007,9 @@ function app() {
     // ---------------------------------------------------------------- WebSocket
 
     connectWebSocket() {
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      const url = `${proto}://${location.host}/ws`;
+      // Relative to the page, so it works standalone and under /hermes/.
+      const url = new URL('api/ws', document.baseURI);
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
       let ws;
       try {
         ws = new WebSocket(url);
@@ -1042,7 +1043,7 @@ function app() {
     _refreshCounts() {
       const seq = this._filterSeq;
       const scope = this.tab === 'saved' ? 'saved' : 'feed';
-      return this._json(`/categories/?scope=${scope}${this._categoryQuery()}`)
+      return this._json(`api/categories/?scope=${scope}${this._categoryQuery()}`)
         .then(data => {
           if (seq !== this._filterSeq) return;  // selection moved on
           this.categoryFilters = data?.filters || [];
@@ -1078,7 +1079,7 @@ function app() {
           break;
 
         case 'source_polled':
-          this._json('/sources/').then(rows => { this.sources = rows || []; })
+          this._json('api/sources/').then(rows => { this.sources = rows || []; })
             .catch(err => console.error('sources refresh', err));
           break;
 
