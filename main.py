@@ -57,6 +57,7 @@ from services.scorer import ClaudeScorer
 from services.sources.registry import SourceRegistry
 from services.sources.substack import SubstackDriver
 from services.summarizer import ClaudeSummarizer
+from services.usage import ClaudeUsage
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +251,8 @@ async def _seed_profile_from_file(
 async def _build_components(
     settings: Settings,
     http: httpx.AsyncClient,
+    *,
+    usage: "ClaudeUsage | None" = None,
 ) -> tuple[
     EventBus,
     WebSocketManager,
@@ -386,6 +389,9 @@ async def _build_components(
         # One client for both stages: they talk to the same API with the same
         # credentials, and sharing it shares the connection pool.
         client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        if usage is not None:
+            # Counted for Pantheon's status screen (GET /api/status).
+            client = usage.wrap(client)
         summarizer = ClaudeSummarizer(
             client,
             model=settings.SUMMARY_MODEL,
@@ -513,6 +519,7 @@ def _make_lifespan(settings: Settings):
         # The HTTP client is owned here rather than by any one component:
         # ``async with`` binds its lifetime to the lifespan scope, so it is
         # closed even if _build_components raises part-way through startup.
+        usage = ClaudeUsage()
         async with httpx.AsyncClient(timeout=30.0) as http:
             (
                 bus,
@@ -523,7 +530,7 @@ def _make_lifespan(settings: Settings):
                 vocabulary,
                 filters,
                 failures,
-            ) = await _build_components(settings, http)
+            ) = await _build_components(settings, http, usage=usage)
 
             # Wire components onto app.state so endpoints + /health can read
             # them.
@@ -545,6 +552,7 @@ def _make_lifespan(settings: Settings):
             # exists: it needs no profile, since proposing one is the point.
             app.state.distiller = distiller
             app.state.startup_failures = failures
+            app.state.claude_usage = usage
 
             errors = [f for f in failures if f.get("severity", "error") == "error"]
             logger.info(

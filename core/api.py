@@ -939,6 +939,53 @@ def mount_ui(app: FastAPI, settings: "Settings") -> None:
     logger.info("Static UI mounted at %s -> %s", UI_MOUNT_PATH, web_dir)
 
 
+def _iso(ts: float | None) -> str | None:
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _build_status_router() -> APIRouter:
+    """GET /api/status — the optional Pantheon module-status contract."""
+
+    router = APIRouter(tags=["status"])
+
+    @router.get("/status")
+    async def module_status(request: Request) -> dict[str, Any]:
+        state = request.app.state
+        settings = getattr(state, "settings", None)
+        failures = [f for f in getattr(state, "startup_failures", [])
+                    if f.get("severity", "error") == "error"]
+        usage = getattr(state, "claude_usage", None)
+        store = getattr(state, "state_store", None)
+        rows = await store.all_source_rows() if store is not None else []
+        failing = sum(1 for row in rows if row["error_count"])
+        polled = [row["last_polled_at"] for row in rows if row["last_polled_at"]]
+        calls, errors = usage.counts() if usage is not None else (0, 0)
+        key_missing = settings is None or not settings.ANTHROPIC_API_KEY
+
+        problems = []
+        if key_missing:
+            problems.append("no Anthropic API key set")
+        if failures:
+            problems.append(f"{len(failures)} startup failure(s)")
+        if failing:
+            problems.append(f"{failing} source(s) failing")
+        return {
+            "state": "degraded" if problems else "ok",
+            "summary": "; ".join(problems) or None,
+            "stats": [
+                {"label": "Claude requests (24h)", "value": calls, "kind": "count"},
+                {"label": "Last Claude call", "value": _iso(usage.last_call) if usage else None, "kind": "time"},
+                {"label": "Claude errors (24h)", "value": errors, "kind": "count", "warn": errors > 0},
+                {"label": "Last feed poll", "value": max(polled) if polled else None, "kind": "time"},
+                {"label": "Sources failing", "value": failing, "kind": "count", "warn": failing > 0},
+            ],
+        }
+
+    return router
+
+
 def create_app(
     *,
     event_bus: "EventBus",
@@ -1011,6 +1058,7 @@ def create_app(
         _build_categories_router,
         _build_sources_router,
         _build_ws_router,
+        _build_status_router,
     ):
         api.include_router(build())
     app.include_router(api)
