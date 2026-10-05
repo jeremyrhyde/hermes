@@ -56,7 +56,8 @@ export function parseHash(hash: string): Route | null {
     if (name && !cats.includes(name)) cats.push(name);
   }
   const openRaw = p.get('open') ?? '';
-  const open = /^\d+$/.test(openRaw) ? Number(openRaw) : null;
+  const openNum = Number(openRaw);
+  const open = /^\d+$/.test(openRaw) && Number.isSafeInteger(openNum) ? openNum : null;
   return { tab, cats, open };
 }
 

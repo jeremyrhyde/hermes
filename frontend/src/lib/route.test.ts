@@ -37,6 +37,11 @@ describe('canonicalHash', () => {
   it('returns the cleaned hash for a fixable route', () => expect(canonicalHash('#/feed?open=x')).toBe('#/feed'));
   it('redirects garbage to the feed', () => expect(canonicalHash('#/workouts')).toBe('#/feed'));
   it('fills an empty hash', () => expect(canonicalHash('')).toBe('#/feed'));
+  it('drops an open id too large to round-trip, in one pass', () => {
+    const huge = `#/feed?open=${'9'.repeat(22)}`;
+    expect(canonicalHash(huge)).toBe('#/feed');
+    expect(parseHash('#/feed?open=9007199254740993')?.open).toBeNull();
+  });
 });
 
 describe('normalizeCats', () => {
