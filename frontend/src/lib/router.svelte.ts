@@ -14,6 +14,7 @@ export const router: { route: Route } = $state({ route: parseHash(location.hash)
 let index = 0;
 
 type ViewTransitionDoc = Document & { startViewTransition?: (cb: () => Promise<void>) => unknown };
+type Transition = { ready?: Promise<unknown>; finished?: Promise<unknown>; updateCallbackDone?: Promise<unknown> };
 
 function current(): Route {
   return parseHash(location.hash) ?? fallback();
@@ -26,10 +27,14 @@ function apply(route: Route, direction: 'forward' | 'back', animate: boolean): v
     return;
   }
   document.documentElement.dataset.nav = direction;
-  doc.startViewTransition(async () => {
-    router.route = route;
+  const t = doc.startViewTransition(async () => {
+    router.route = current();
     await tick();
-  });
+  }) as Transition | undefined;
+  // An aborted or skipped transition rejects these; nobody awaits them.
+  t?.ready?.catch(() => {});
+  t?.finished?.catch(() => {});
+  t?.updateCallbackDone?.catch(() => {});
 }
 
 // Safari's edge-swipe back/forward gesture sets this on the PopStateEvent it
@@ -52,7 +57,7 @@ export function initRouter(): () => void {
     index = idx;
     // A hand-edited hash arrives here too: tidy it in place.
     const fixed = canonicalHash(location.hash);
-    if (fixed !== null) history.replaceState({ idx: index }, '', fixed);
+    if (fixed !== null || typeof event.state?.idx !== 'number') history.replaceState({ idx: index }, '', fixed ?? undefined);
     const swiped = 'hasUAVisualTransition' in event && event.hasUAVisualTransition === true;
     const next = current();
     apply(next, direction, !swiped && next.tab !== router.route.tab);

@@ -34,7 +34,8 @@ export const settings: SettingsState = $state({
   rescore: false, generating: false, resolving: false, reviewError: '',
 });
 
-// Any write supersedes an in-flight refresh, so a late GET can't paint over it.
+// Any write supersedes refreshes started before it, and every successful write ends with its own
+// refresh, so the newest data always wins.
 const seq = new Sequencer();
 const message = (err: unknown, fallback: string) => (err instanceof Error && err.message ? err.message : fallback);
 
@@ -86,8 +87,8 @@ export async function commitKnob(key: KnobKey, raw: string): Promise<void> {
     return;
   }
   if (settings.prefs) settings.prefs[key] = value;
-  if (key === 'distill_threshold') await refreshSettings();
-  else feed.stale = true; // the gate moved; the feed reloads when you go back to it
+  if (key !== 'distill_threshold') feed.stale = true; // the gate moved; the feed reloads when you go back to it
+  await refreshSettings();
 }
 
 export async function saveProfile(body: string): Promise<void> {
@@ -96,30 +97,28 @@ export async function saveProfile(body: string): Promise<void> {
     settings.profileError = EMPTY_PROFILE_ERROR;
     return;
   }
-  const id = seq.next();
+  seq.next();
   settings.savingProfile = true;
   let version: string | undefined;
   try {
     version = (await api.saveProfile(body))?.version;
   } catch (err) {
-    if (seq.isCurrent(id)) settings.profileError = message(err, 'Could not save the profile.');
+    settings.profileError = message(err, 'Could not save the profile.');
     return;
   } finally {
     settings.savingProfile = false;
   }
-  if (!seq.isCurrent(id)) return;
   toast(saveNotice(version), 'info', { ms: 8000 });
   await refreshSettings();
 }
 
 export async function propose(): Promise<void> {
-  const id = seq.next();
+  seq.next();
   settings.reviewError = '';
   settings.generating = true;
   try {
     await api.propose();
   } catch (err) {
-    if (!seq.isCurrent(id)) return;
     if (!(err instanceof ApiError && err.status === 409)) {
       settings.reviewError = message(err, 'Could not propose a profile.');
       return;
@@ -128,18 +127,17 @@ export async function propose(): Promise<void> {
   } finally {
     settings.generating = false;
   }
-  if (seq.isCurrent(id)) await refreshSettings();
+  await refreshSettings();
 }
 
 async function resolve<T>(call: () => Promise<T>, failure: string): Promise<{ value: T } | null> {
-  const id = seq.next();
+  seq.next();
   settings.resolving = true;
   settings.reviewError = '';
   try {
     const value = await call();
-    return seq.isCurrent(id) ? { value } : null;
+    return { value };
   } catch (err) {
-    if (!seq.isCurrent(id)) return null;
     if (err instanceof ApiError && err.status === 409) {
       settings.reviewError = STALE_PROPOSAL_ERROR;
       void refreshSettings();

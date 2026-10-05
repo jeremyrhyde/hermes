@@ -25,6 +25,7 @@ interface FeedState {
 
 export const feed: FeedState = $state({
   mode: 'feed', cats: [], items: [], gating: EMPTY_GATING, filters: [], filtersLoaded: false,
+  // frozen: always replace feed.gating, never mutate it
   hasAnySaved: false, loaded: false, pending: 0, stale: false,
 });
 
@@ -94,20 +95,23 @@ export async function setSaved(item: FeedItem, next: boolean): Promise<boolean> 
   const prev = item.saved;
   if (prev === next) return true;
   const removing = !next && feed.mode === 'saved';
+  const listKey = `${feed.mode}|${feed.cats.join(',')}`;
   const idx = feed.items.findIndex((i) => i.article_id === id);
   item.saved = next;
   if (removing && idx >= 0) feed.items.splice(idx, 1);
   if (removing) removedAt.set(id, Infinity);
+  const prevMark = removedAt.get(id);
   if (next) removedAt.delete(id);
   begin(id);
   try {
     await (next ? api.save(id) : api.unsave(id));
   } catch (err) {
-    removedAt.delete(id);
+    if (next && prevMark !== undefined) removedAt.set(id, prevMark);
+    else removedAt.delete(id);
     item.saved = prev;
     const cur = find(id);
     if (cur) cur.saved = prev;
-    else if (removing && idx >= 0) feed.items.splice(idx, 0, item);
+    else if (removing && idx >= 0 && listKey === `${feed.mode}|${feed.cats.join(',')}`) feed.items.splice(idx, 0, item);
     toastError(err);
     return false;
   } finally {
@@ -115,7 +119,7 @@ export async function setSaved(item: FeedItem, next: boolean): Promise<boolean> 
   }
   if (removing) removedAt.set(id, seq.current);
   if (next) feed.hasAnySaved = true;
-  else if (feed.mode === 'saved' && feed.items.length === 0) feed.hasAnySaved = false;
+  else if (feed.mode === 'saved' && feed.cats.length === 0 && feed.items.length === 0) feed.hasAnySaved = false;
   if (next && feed.mode === 'saved' && !find(id)) await reloadFeed();
   else void refreshCounts();
   return true;

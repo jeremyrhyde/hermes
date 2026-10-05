@@ -28,7 +28,7 @@ export async function boot(route: Route): Promise<void> {
   try {
     await Promise.all([
       loadHealth(),
-      loadSources(),
+      loadSources().catch((err) => console.error('boot: sources', err)),
       isListTab(route.tab) ? loadFeed(route.tab, route.cats) : Promise.resolve(),
       route.tab === 'settings' ? refreshSettings() : Promise.resolve(),
     ]);
