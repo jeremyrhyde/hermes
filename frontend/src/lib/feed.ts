@@ -15,11 +15,11 @@ export class Sequencer {
   }
 }
 
-export const EMPTY_GROUP: GateGroup = { count: 0, high: null, low: null };
-export const EMPTY_GATING: Gating = {
+export const EMPTY_GROUP: GateGroup = Object.freeze({ count: 0, high: null, low: null });
+export const EMPTY_GATING: Gating = Object.freeze({
   cutoff: 0, max_displayed: 50, total: 0,
   above_cutoff: EMPTY_GROUP, below_cutoff: EMPTY_GROUP, unscored: EMPTY_GROUP,
-};
+});
 
 const group = (g: Partial<GateGroup> | null | undefined): GateGroup => ({ ...EMPTY_GROUP, ...(g ?? {}) });
 
@@ -43,6 +43,17 @@ export function mergeInFlight(fresh: FeedItem[], current: FeedItem[], inFlight: 
   return fresh.map((item) => {
     const mine = (inFlight.get(item.article_id) ?? 0) > 0 ? local.get(item.article_id) : undefined;
     return mine ? { ...item, saved: mine.saved, rating: mine.rating } : item;
+  });
+}
+
+/** On Saved, a list requested before an unsave settled can still contain the
+ *  card. `removedAt` maps article id → the last request id that may predate
+ *  the unsave (Infinity while the DELETE is in flight); drop those cards. */
+export function dropRemoved(fresh: FeedItem[], requestId: number, removedAt: ReadonlyMap<number, number>): FeedItem[] {
+  if (removedAt.size === 0) return fresh;
+  return fresh.filter((i) => {
+    const mark = removedAt.get(i.article_id);
+    return mark === undefined || requestId > mark;
   });
 }
 

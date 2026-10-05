@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  arrivalEffect, EMPTY_GATING, mergeInFlight, normalizeGating, ratingRequest, Sequencer, shouldHold,
+  arrivalEffect, dropRemoved, EMPTY_GATING, mergeInFlight, normalizeGating, ratingRequest, Sequencer, shouldHold,
   swipeLeftResult, toggledRating,
 } from './feed';
 import type { FeedItem } from './types';
@@ -38,10 +38,25 @@ describe('mergeInFlight', () => {
     expect(merged[0]).toMatchObject({ saved: true, rating: -1, score: 70 });
     expect(merged[1]).toMatchObject({ saved: true });
   });
+  it('treats a zero counter as not in flight', () => {
+    const fresh = [item(1, { saved: false })];
+    expect(mergeInFlight(fresh, [item(1, { saved: true })], new Map([[1, 0]]))[0].saved).toBe(false);
+  });
   it('is the fresh list when nothing is in flight', () => {
     const fresh = [item(1)];
     expect(mergeInFlight(fresh, [], new Map())).toBe(fresh);
   });
+});
+
+describe('dropRemoved', () => {
+  const fresh = [item(1), item(2)];
+  it('drops a card whose unsave is still in flight', () =>
+    expect(dropRemoved(fresh, 9, new Map([[1, Infinity]])).map((i) => i.article_id)).toEqual([2]));
+  it('drops a card from a list requested before the unsave settled', () =>
+    expect(dropRemoved(fresh, 5, new Map([[1, 5]])).map((i) => i.article_id)).toEqual([2]));
+  it('trusts a list requested after the unsave settled', () =>
+    expect(dropRemoved(fresh, 6, new Map([[1, 5]])).map((i) => i.article_id)).toEqual([1, 2]));
+  it('is the fresh list when nothing was removed', () => expect(dropRemoved(fresh, 1, new Map())).toBe(fresh));
 });
 
 describe('shouldHold', () => {
@@ -52,6 +67,7 @@ describe('shouldHold', () => {
 
 describe('arrivalEffect', () => {
   it('only refreshes counts on Saved', () => expect(arrivalEffect({ mode: 'saved', visible: true, counted: true, hold: false })).toBe('counts'));
+  it('marks stale when Saved is not on screen', () => expect(arrivalEffect({ mode: 'saved', visible: false, counted: true, hold: false })).toBe('stale'));
   it('marks stale when the list is not on screen', () => expect(arrivalEffect({ mode: 'feed', visible: false, counted: true, hold: false })).toBe('stale'));
   it('reloads when not holding', () => expect(arrivalEffect({ mode: 'feed', visible: true, counted: true, hold: false })).toBe('reload'));
   it('counts a held summary', () => expect(arrivalEffect({ mode: 'feed', visible: true, counted: true, hold: true })).toBe('pending'));
