@@ -5,7 +5,7 @@
   import FeedCard from '../components/FeedCard.svelte';
   import GateRows from '../components/GateRows.svelte';
   import Icon from '../components/Icon.svelte';
-  import { feed, loadFeed } from '../lib/feed.svelte';
+  import { feed, loadFor } from '../lib/feed.svelte';
   import { feedHeading, savedHeading } from '../lib/format';
   import { dur } from '../lib/motion';
   import { normalizeCats, sameCats } from '../lib/route';
@@ -18,18 +18,40 @@
   const open = $derived(router.route.open);
   const current = $derived(feed.loaded && feed.mode === mode && sameCats(feed.cats, cats));
 
+  const catsKey = $derived(cats.join('\u0000'));
+  const showList = $derived(feed.loaded && feed.mode === mode);
+
+  let attempt = 0;
+  let failed: string | null = $state(null);
+
   function load(): void {
-    loadFeed(mode, cats).catch(toastError);
+    const n = ++attempt;
+    const wantMode = mode;
+    const wantCats = untrack(() => cats);
+    loadFor(wantMode, wantCats).then(
+      (kept) => {
+        if (n !== attempt) return;
+        failed = null;
+        if (kept) patchRoute({ cats: kept, open: null });
+      },
+      (err) => {
+        if (n !== attempt) return;
+        failed = err instanceof Error ? err.message : String(err);
+        toastError(err);
+      },
+    );
   }
 
   // Load when the route names a list other than the one on screen, or the one
-  // on screen went stale while you were elsewhere. Only the route is tracked:
-  // tracking `pending` would reload on every held arrival and defeat the pill.
+  // on screen went stale while you were elsewhere. Only the route's values are
+  // tracked (mode and the joined categories): opening a card makes a new `cats`
+  // array, and tracking `pending` would defeat the pill.
   $effect(() => {
-    const wanted = { mode, cats };
-    const fresh = untrack(() => feed.loaded && feed.mode === wanted.mode && sameCats(feed.cats, wanted.cats)
+    const wantMode = mode;
+    void catsKey; // track the values, not the array
+    const fresh = untrack(() => feed.loaded && feed.mode === wantMode && sameCats(feed.cats, cats)
       && !feed.stale && feed.pending === 0);
-    if (!fresh) loadFeed(wanted.mode, wanted.cats).catch(toastError);
+    if (!fresh) load();
   });
 
   // Tidy the URL once this tab's filters have loaded (never before, so a deep
@@ -45,9 +67,7 @@
   const clear = () => patchRoute({ cats: [], open: null });
 </script>
 
-{#if !current}
-  <p class="center-state muted">Loading…</p>
-{:else}
+{#if showList}
   <div class="page-head">
     <h2 class="section-title">
       {mode === 'saved' ? savedHeading(feed.items.length) : feedHeading(feed.gating, feed.items.length)}
@@ -85,6 +105,10 @@
   {/if}
 
   {#if mode === 'feed'}<GateRows />{/if}
+{:else if failed}
+  <div class="center-state"><p>{failed}</p><button type="button" class="btn" onclick={load}>Retry</button></div>
+{:else}
+  <p class="center-state muted">Loading…</p>
 {/if}
 
 <style>

@@ -1,9 +1,10 @@
 import { api, ApiError } from './api';
-import { feed, loadFeed } from './feed.svelte';
+import { feed, loadFeed, loadFor } from './feed.svelte';
 import { isListTab, type Route } from './route';
+import { patchRoute } from './router.svelte';
 import { refreshSettings } from './settings.svelte';
 import { toastError } from './toast.svelte';
-import type { Source, StartupFailure } from './types';
+import type { Mode, Source, StartupFailure } from './types';
 
 interface AppState {
   ready: boolean;
@@ -23,13 +24,22 @@ export async function loadSources(): Promise<void> {
   app.sources = (await api.sources()) ?? [];
 }
 
+/** Boot's list load; categories the server rejects are dropped from the route and the list loads again. */
+async function bootFeed(mode: Mode, cats: string[]): Promise<void> {
+  const kept = await loadFor(mode, cats);
+  if (kept) {
+    patchRoute({ cats: kept, open: null });
+    await loadFeed(mode, kept);
+  }
+}
+
 /** First load: health, sources and whatever the starting route shows. */
 export async function boot(route: Route): Promise<void> {
   try {
     await Promise.all([
       loadHealth(),
       loadSources().catch((err) => console.error('boot: sources', err)),
-      isListTab(route.tab) ? loadFeed(route.tab, route.cats) : Promise.resolve(),
+      isListTab(route.tab) ? bootFeed(route.tab, route.cats) : Promise.resolve(),
       route.tab === 'settings' ? refreshSettings() : Promise.resolve(),
     ]);
     app.error = null;

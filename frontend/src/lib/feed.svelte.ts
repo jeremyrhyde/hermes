@@ -1,8 +1,9 @@
-import { api } from './api';
+import { api, ApiError } from './api';
 import {
   dropRemoved, EMPTY_GATING, mergeInFlight, normalizeGating, ratingRequest, Sequencer, swipeLeftResult, toggledRating,
   type ArrivalEffect,
 } from './feed';
+import { normalizeCats, sameCats } from './route';
 import { toast, toastError } from './toast.svelte';
 import type { CategoryFilter, FeedItem, Gating, Mode, Ranked, RatingValue } from './types';
 
@@ -10,6 +11,8 @@ interface FeedState {
   /** Which list `items` holds, and under which filters. */
   mode: Mode;
   cats: string[];
+  /** The most recently requested list; reloads follow this, not the loaded list. */
+  target: { mode: Mode; cats: string[] };
   items: FeedItem[];
   gating: Gating;
   filters: CategoryFilter[];
@@ -24,7 +27,7 @@ interface FeedState {
 }
 
 export const feed: FeedState = $state({
-  mode: 'feed', cats: [], items: [], gating: EMPTY_GATING, filters: [], filtersLoaded: false,
+  mode: 'feed', cats: [], target: { mode: 'feed', cats: [] }, items: [], gating: EMPTY_GATING, filters: [], filtersLoaded: false,
   // frozen: always replace feed.gating, never mutate it
   hasAnySaved: false, loaded: false, pending: 0, stale: false,
 });
@@ -43,6 +46,7 @@ const find = (id: number) => feed.items.find((i) => i.article_id === id);
 /** Load a list with its filter counts. Throws when the list request fails, so
  *  boot can show the FatalScreen; everything after boot uses reloadFeed. */
 export async function loadFeed(mode: Mode, cats: string[]): Promise<void> {
+  feed.target = { mode, cats };
   const id = seq.next();
   const [list, categories, anySaved] = await Promise.allSettled([
     mode === 'saved' ? api.saved(cats) : api.ranked(cats),
@@ -75,16 +79,36 @@ export async function loadFeed(mode: Mode, cats: string[]): Promise<void> {
   feed.loaded = true;
 }
 
+/** Load the list a route names. If the server rejects its categories (400 for a
+ *  name outside the vocabulary), return the subset it still offers so the caller
+ *  can rewrite the route; otherwise null. Other failures throw. */
+export async function loadFor(mode: Mode, cats: string[]): Promise<string[] | null> {
+  try {
+    await loadFeed(mode, cats);
+    return null;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 400 && cats.length > 0) {
+      const offered = await api.categories(mode, []).then((c) => c?.filters.map((f) => f.category) ?? [], () => null);
+      if (offered) {
+        const kept = normalizeCats(cats, offered);
+        if (!sameCats(kept, cats)) return kept;
+      }
+    }
+    throw err;
+  }
+}
+
 export function reloadFeed(): Promise<void> {
-  return loadFeed(feed.mode, feed.cats).catch(toastError);
+  return loadFeed(feed.target.mode, feed.target.cats).catch(toastError);
 }
 
 /** Counts only — the filter row after a save or a poll. */
 export async function refreshCounts(): Promise<void> {
   const id = seq.current;
+  const { mode, cats } = feed;
   try {
-    const c = await api.categories(feed.mode, feed.cats);
-    if (seq.isCurrent(id)) feed.filters = c?.filters ?? [];
+    const c = await api.categories(mode, cats);
+    if (seq.isCurrent(id) && feed.mode === mode && sameCats(feed.cats, cats)) feed.filters = c?.filters ?? [];
   } catch (err) {
     console.error('feed: counts', err);
   }
