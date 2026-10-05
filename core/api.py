@@ -967,12 +967,14 @@ def _build_status_router() -> APIRouter:
         problems = []
         if key_missing:
             problems.append("no Anthropic API key set")
-        if failures:
+        if failures and not key_missing:
+            # Without a key the startup failures are that same cause again.
             problems.append(f"{len(failures)} startup failure(s)")
         if failing:
             problems.append(f"{failing} source(s) failing")
+        degraded = bool(problems or failures)
         return {
-            "state": "degraded" if problems else "ok",
+            "state": "degraded" if degraded else "ok",
             "summary": "; ".join(problems) or None,
             "stats": [
                 {"label": "Claude requests (24h)", "value": calls, "kind": "count"},

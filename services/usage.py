@@ -25,16 +25,20 @@ class ClaudeUsage:
 
     def record(self, ok: bool) -> None:
         now = self._clock()
+        self._prune(now)
         self._calls.append(now)
         self.last_call = now
         if not ok:
             self._errors.append(now)
 
-    def counts(self) -> tuple[int, int]:
-        cutoff = self._clock() - _WINDOW_S
+    def _prune(self, now: float) -> None:
+        cutoff = now - _WINDOW_S
         for times in (self._calls, self._errors):
             while times and times[0] < cutoff:
                 times.popleft()
+
+    def counts(self) -> tuple[int, int]:
+        self._prune(self._clock())
         return len(self._calls), len(self._errors)
 
     def wrap(self, client: Any) -> Any:
