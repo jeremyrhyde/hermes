@@ -1,0 +1,115 @@
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { margin: 0; background: var(--color-bg); }
+
+body {
+  color: var(--color-text);
+  font-family: var(--font-stack);
+  font-size: var(--text-md);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+h1 { font-size: var(--text-lg); margin: 0; }
+h2 { font-size: var(--text-md); margin: 0; }
+h3 { font-size: var(--text-sm); margin: 0; }
+p { margin: 0; }
+code { font-family: var(--font-mono); font-size: 0.875em; }
+
+button, input, select, textarea { font: inherit; color: inherit; }
+input, select, textarea { font-size: max(16px, var(--text-md)); } /* no iOS zoom-on-focus */
+
+:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ------------------------------------------------------------ layout */
+
+/* Bottom padding clears the floating pill: its height, its offset from the
+   bottom edge, the home-indicator inset, and breathing room. */
+.screen {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--space-4) calc(var(--space-4) + var(--safe-right))
+    calc(var(--pill-h) + var(--space-4) + var(--safe-bottom) + var(--space-8)) calc(var(--space-4) + var(--safe-left));
+  display: grid;
+  gap: var(--space-4);
+  view-transition-name: screen;
+}
+
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.center-state { display: grid; place-items: center; gap: var(--space-4); padding: var(--space-10) var(--space-4); text-align: center; }
+.muted { color: var(--color-text-muted); }
+.stack { display: grid; gap: var(--space-3); }
+.section-title { font-size: var(--text-sm); color: var(--color-text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; margin: 0; }
+.empty { color: var(--color-text-muted); display: grid; gap: var(--space-3); justify-items: start; }
+.inline-error { color: var(--color-danger); font-size: var(--text-sm); }
+.help { color: var(--color-text-muted); font-size: var(--text-sm); }
+
+/* ------------------------------------------------------------ buttons */
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
+  min-height: var(--tap-min); padding: 0 var(--space-4);
+  background: var(--color-surface-2); border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); cursor: pointer; text-decoration: none; color: inherit;
+  transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
+}
+.btn:active:not(:disabled) { transform: scale(0.98); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn.primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-on-accent); font-weight: 600; }
+.btn.quiet { background: none; border-color: transparent; color: var(--color-text-muted); }
+.btn.small { padding: 0 var(--space-3); font-size: var(--text-sm); }
+
+.icon-btn {
+  display: inline-grid; place-items: center; min-width: var(--tap-min); min-height: var(--tap-min);
+  background: none; border: 0; border-radius: var(--radius-md); color: var(--color-text-muted); cursor: pointer;
+}
+.icon-btn:active { background: var(--color-surface-2); }
+
+/* ------------------------------------------------------------ surfaces */
+
+.card {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-1);
+}
+
+.segmented { display: inline-flex; padding: 3px; gap: 2px; background: var(--color-surface-2); border-radius: var(--radius-md); }
+.segmented button {
+  min-height: var(--tap-min); padding: 0 var(--space-3); border: 0; border-radius: calc(var(--radius-md) - 3px);
+  background: none; color: var(--color-text-muted); cursor: pointer; font-size: var(--text-sm);
+}
+.segmented button.on { background: var(--color-surface); color: var(--color-text); box-shadow: var(--shadow-1); }
+
+.input {
+  width: 100%; padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: var(--radius-md);
+}
+textarea.input { min-height: 240px; resize: vertical; font-family: var(--font-mono); font-size: max(16px, var(--text-sm)); line-height: 1.5; }
+
+/* ------------------------------------------------------------ view transitions */
+
+::view-transition-old(screen),
+::view-transition-new(screen) { animation-duration: var(--nav-duration); animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1); }
+html[data-nav='forward']::view-transition-old(screen) { animation-name: slide-out-left; }
+html[data-nav='forward']::view-transition-new(screen) { animation-name: slide-in-right; }
+html[data-nav='back']::view-transition-old(screen) { animation-name: slide-out-right; }
+html[data-nav='back']::view-transition-new(screen) { animation-name: slide-in-left; }
+
+@keyframes slide-in-right { from { transform: translateX(30%); opacity: 0; } }
+@keyframes slide-out-left { to { transform: translateX(-15%); opacity: 0; } }
+@keyframes slide-in-left { from { transform: translateX(-30%); opacity: 0; } }
+@keyframes slide-out-right { to { transform: translateX(15%); opacity: 0; } }
+
+/* data-motion is always the resolved value (OS preference or the Display
+   override), set by prefs.svelte.ts and by the bootstrap script in index.html. */
+:root[data-motion='reduced'] *, :root[data-motion='reduced'] *::before, :root[data-motion='reduced'] *::after {
+  animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important;
+}
+:root[data-motion='reduced']::view-transition-group(*),
+:root[data-motion='reduced']::view-transition-old(*),
+:root[data-motion='reduced']::view-transition-new(*) { animation: none !important; }
