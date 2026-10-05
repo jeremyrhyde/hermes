@@ -29,13 +29,25 @@ esac
 
 source "$(dirname "$0")/_common.sh"
 
+# The service serves frontend/dist; build it so an install never comes up
+# without a UI. Node is a build-time dependency only.
+build_ui() {
+  if ! command -v node >/dev/null 2>&1 \
+     || [ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)" -lt 20 ]; then
+    echo "ERROR: Node.js 20+ is needed to build the UI. Run 'make setup' first." >&2
+    exit 1
+  fi
+  ( cd "$HERMES_HOME/frontend" && npm ci && npm run build )
+}
+
 # ------------------------------------------------------------------ Linux
 linux() {
   local unit="$SYSTEMD_USER_DIR/$SERVICE_NAME"
   case "$ACTION" in
     install)
-      echo "[1/3] uv sync..."
+      echo "[1/3] uv sync + UI build..."
       ( cd "$HERMES_HOME" && "$UV_BIN" sync )
+      build_ui
       echo "[2/3] writing $unit..."
       mkdir -p "$SYSTEMD_USER_DIR"
       render_unit "$HERMES_HOME/deploy/hermes.service" "$unit"
@@ -70,8 +82,9 @@ macos() {
   local target="gui/$(id -u)"
   case "$ACTION" in
     install)
-      echo "[1/3] uv sync..."
+      echo "[1/3] uv sync + UI build..."
       ( cd "$HERMES_HOME" && "$UV_BIN" sync )
+      build_ui
       echo "[2/3] writing $plist..."
       mkdir -p "$LAUNCHD_DIR" "$LOG_DIR"
       render_unit "$HERMES_HOME/deploy/com.hermes.server.plist" "$plist"

@@ -2,12 +2,15 @@
 #
 # Common workflows wrapped as `make` targets. Run `make help` for the list.
 # Most targets shell out to `uv` — install it first: https://docs.astral.sh/uv/
+# The UI needs Node 20+ to build (`make setup` installs it if missing).
 
 # Resolve `uv`: prefer one already on PATH, else the location the official
 # installer drops it (~/.local/bin). Override with `make UV=/path/to/uv ...`.
 UV ?= $(shell command -v uv 2>/dev/null || echo $(HOME)/.local/bin/uv)
 PYTHON := $(UV) run python
 PYTEST := $(UV) run pytest
+NPM ?= npm
+FRONTEND := frontend
 
 # Host/port for the dev server. The plain `make run` target reads these from
 # config.Settings (i.e. the environment / .env) instead, so they only apply
@@ -26,24 +29,25 @@ help:
 	@echo "Hermes — make targets"
 	@echo ""
 	@echo "Pipeline (Linux + macOS):"
-	@echo "  make setup          Ensure the uv toolchain is installed"
-	@echo "  make build          Sync deps into .venv and byte-compile sources"
+	@echo "  make setup          Ensure uv and Node 20+ are installed"
+	@echo "  make build          Sync deps, byte-compile, build the UI into frontend/dist"
 	@echo "  make run            Start the server in the foreground"
 	@echo "  -> full bootstrap:  make setup build run"
 	@echo ""
 	@echo "Setup:"
 	@echo "  make install        Alias for build"
 	@echo "  make lock           Re-lock dependencies (regenerate uv.lock)"
-	@echo "  make clean          Remove caches, build artefacts, *.pyc"
-	@echo "  make distclean      clean + remove .venv and uv.lock"
+	@echo "  make clean          Remove caches, build artefacts, frontend/dist"
+	@echo "  make distclean      clean + remove .venv, uv.lock and frontend/node_modules"
 	@echo ""
 	@echo "Run:"
 	@echo "  make run            Start the FastAPI server (host/port from .env)"
-	@echo "  make run-dev        Start with auto-reload (HOST/PORT overridable)"
+	@echo "  make run-dev        API with reload on :$(PORT) + UI dev server on :5173"
 	@echo "  make open           Open the web UI in a browser"
 	@echo ""
 	@echo "Tests:"
-	@echo "  make test           Run the pytest suite"
+	@echo "  make test           pytest, then vitest and type checks"
+	@echo "  make check          svelte-check + tsc on the UI"
 	@echo "  make health         curl /health"
 	@echo "  make sources        list configured sources and their health"
 	@echo "  make feed           print the 10 most recent feed items"
@@ -82,14 +86,48 @@ setup:
 		fi; \
 		echo "uv installed to $(HOME)/.local/bin — ensure it is on your PATH."; \
 	fi
+	@if command -v node >/dev/null 2>&1 && [ "$$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null)" -ge 20 ] 2>/dev/null; then \
+		echo "node present: $$(node --version)"; \
+	else \
+		echo "Node.js 20+ not found — installing (needed to build the UI)..."; \
+		if [ "$$(uname)" = "Darwin" ]; then \
+			command -v brew >/dev/null 2>&1 || { echo "ERROR: Homebrew required. Install from https://brew.sh, then re-run 'make setup'."; exit 1; }; \
+			brew install node; \
+		elif command -v apt-get >/dev/null 2>&1; then \
+			command -v curl >/dev/null 2>&1 || { echo "ERROR: need curl to install Node. Install curl, then re-run 'make setup'."; exit 1; }; \
+			SUDO=""; [ "$$(id -u)" -ne 0 ] && SUDO="sudo"; \
+			if [ -n "$$SUDO" ] && ! sudo -n true 2>/dev/null; then echo "  (installing Node system-wide — you may be prompted for your sudo password)"; fi; \
+			curl -fsSL https://deb.nodesource.com/setup_20.x -o /tmp/nodesource_setup.sh && \
+			$$SUDO bash /tmp/nodesource_setup.sh && \
+			$$SUDO apt-get install -y nodejs && \
+			rm -f /tmp/nodesource_setup.sh; \
+		else \
+			echo "ERROR: cannot auto-install Node 20+ on this OS."; \
+			echo "  Install Node 20+ from https://nodejs.org/en/download, then re-run 'make setup'."; \
+			exit 1; \
+		fi; \
+		if command -v node >/dev/null 2>&1 && [ "$$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null)" -ge 20 ] 2>/dev/null; then \
+			echo "node installed: $$(node --version)"; \
+		else \
+			echo "ERROR: Node install did not produce Node 20+ on PATH. See https://nodejs.org/en/download"; \
+			exit 1; \
+		fi; \
+	fi
 
-# build — sync locked deps into .venv, then byte-compile the sources so a
-# syntax error fails the build on any platform.
+# build — sync locked deps into .venv, byte-compile the sources so a syntax
+# error fails the build, then build the UI into frontend/dist.
 .PHONY: build
 build:
 	$(UV) sync
 	$(UV) run python -m compileall -q core services schemas main.py config.py
+	cd $(FRONTEND) && $(NPM) ci && $(NPM) run build
 	@echo "Build complete."
+
+# check — type-check the UI (svelte-check + tsc). Kept out of build so a Pi
+# install stays fast; `make test` runs it.
+.PHONY: check
+check:
+	cd $(FRONTEND) && $(NPM) run check
 
 .PHONY: install
 install: build
@@ -100,17 +138,18 @@ lock:
 
 .PHONY: clean
 clean:
-	@find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+	@find . -path ./$(FRONTEND)/node_modules -prune -o -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 	@find . -type d -name .pytest_cache -prune -exec rm -rf {} + 2>/dev/null || true
 	@find . -type d -name '*.egg-info' -prune -exec rm -rf {} + 2>/dev/null || true
-	@find . -type f -name '*.pyc' -delete 2>/dev/null || true
+	@find . -path ./$(FRONTEND)/node_modules -prune -o -type f -name '*.pyc' -delete 2>/dev/null || true
+	@rm -rf $(FRONTEND)/dist
 	@echo "Cleaned caches and build artefacts."
 
 .PHONY: distclean
 distclean: clean
-	@rm -rf .venv
+	@rm -rf .venv $(FRONTEND)/node_modules
 	@rm -f uv.lock
-	@echo "Removed .venv and uv.lock. Run 'make install' to rebuild."
+	@echo "Removed .venv, uv.lock and node_modules. Run 'make build' to rebuild."
 
 # ---------------------------------------------------------------------------
 # Run
@@ -122,6 +161,9 @@ run:
 
 .PHONY: run-dev
 run-dev:
+	@echo "API on :$(PORT) — UI dev server on http://localhost:5173/"
+	@trap 'kill 0' INT TERM EXIT; \
+	(cd $(FRONTEND) && $(NPM) run dev -- --host) & \
 	$(UV) run uvicorn main:app --reload --host $(HOST) --port $(PORT)
 
 .PHONY: open
@@ -135,6 +177,11 @@ open:
 .PHONY: test
 test:
 	$(PYTEST) -v
+	@if [ -d $(FRONTEND)/node_modules ]; then \
+		cd $(FRONTEND) && $(NPM) test && $(NPM) run check; \
+	else \
+		echo "Skipping vitest and type checks: $(FRONTEND)/node_modules not found. Run 'make build' first."; \
+	fi
 
 # ---------------------------------------------------------------------------
 # Live checks — the server must already be running.
