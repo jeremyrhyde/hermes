@@ -24,7 +24,7 @@
     position: fixed; left: 50%; z-index: 40;
     bottom: calc(var(--pill-h) + var(--space-4) + var(--safe-bottom) + var(--space-3));
     transform: translateX(-50%);
-    display: grid; gap: var(--space-2); width: min(92vw, 420px);
+    display: grid; gap: var(--space-2); width: min(calc(100vw - 2 * var(--space-4)), 420px);
     pointer-events: none; transition: transform var(--transition);
   }
   .toasts.lifted { transform: translate(-50%, calc(-1 * (var(--tap-min) + var(--space-2)))); }

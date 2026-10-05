@@ -32,6 +32,7 @@
   }
 
   function onArticle(counted: boolean): void {
+    if (!app.ready) return;
     noteArrival(arrivalEffect({
       mode: feed.mode,
       visible: isListTab(router.route.tab),
@@ -118,4 +119,4 @@
 
 {#if app.ready && listTab}<NewPill />{/if}
 <NavPill />
-<Toasts lifted={listTab && feed.pending > 0} />
+<Toasts lifted={app.ready && listTab && feed.pending > 0} />
