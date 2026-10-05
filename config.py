@@ -8,7 +8,7 @@ Example:
     >>> from config import Settings
     >>> s = Settings()
     >>> s.PORT
-    8000
+    8002
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     Fields:
         HOST: Address the FastAPI server binds to. Default ``"0.0.0.0"``.
-        PORT: TCP port the server listens on. Default ``8000``.
+        PORT: TCP port the server listens on. Default ``8002``.
         LOG_LEVEL: Log level passed to uvicorn / loggers. Default ``"info"``.
         WEB_DIR: Directory containing the static frontend served by FastAPI
             under ``/ui``. Default ``"./web"``.
@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     """
 
     HOST: str = "0.0.0.0"
-    PORT: int = 8000
+    PORT: int = 8002
     LOG_LEVEL: str = "info"
     WEB_DIR: str = "./web"
 

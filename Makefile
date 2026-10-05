@@ -13,7 +13,7 @@ PYTEST := $(UV) run pytest
 # config.Settings (i.e. the environment / .env) instead, so they only apply
 # to run-dev.
 HOST ?= 0.0.0.0
-PORT ?= 8000
+PORT ?= 8002
 
 .DEFAULT_GOAL := help
 
@@ -132,11 +132,11 @@ test:
 # ---------------------------------------------------------------------------
 # Live checks — the server must already be running.
 #
-# Override the API host with HERMES_HOST (defaults to http://localhost:8000):
-#   make health HERMES_HOST=http://192.168.1.50:8000
+# Override the API host with HERMES_HOST (defaults to http://localhost:8002):
+#   make health HERMES_HOST=http://192.168.1.50:8002
 # ---------------------------------------------------------------------------
 
-HERMES_HOST ?= http://localhost:8000
+HERMES_HOST ?= http://localhost:8002
 ID ?=
 
 .PHONY: health
