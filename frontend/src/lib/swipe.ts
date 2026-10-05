@@ -62,12 +62,19 @@ export function swipe(node: HTMLElement, options: Options) {
   let velocity = 0;
   let axis: Axis = 'pending';
   let clearTimer: ReturnType<typeof setTimeout> | undefined;
+  let cancelEnd: (() => void) | undefined;
 
   const face = () => node.querySelector<HTMLElement>('[data-swipe-face]');
 
-  function clearUnderlay() {
+  function cancelPendingClear() {
     clearTimeout(clearTimer);
     clearTimer = undefined;
+    cancelEnd?.();
+    cancelEnd = undefined;
+  }
+
+  function clearUnderlay() {
+    cancelPendingClear();
     // Not if a new drag has begun since the spring-back started.
     if (pointerId === null) delete node.dataset.swipe;
   }
@@ -76,15 +83,19 @@ export function swipe(node: HTMLElement, options: Options) {
     const el = face();
     if (!el) return;
     const ms = animate ? dur(180) : 0;
-    clearTimeout(clearTimer);
-    clearTimer = undefined;
+    cancelPendingClear();
     el.style.transition = ms ? `transform ${ms}ms ease-out` : 'none';
     el.style.transform = px ? `translateX(${px}px)` : '';
     if (px > 0) node.dataset.swipe = 'right';
     else if (px < 0) node.dataset.swipe = 'left';
     else if (ms > 0) {
       // Keep the underlay visible until the face has finished returning.
-      el.addEventListener('transitionend', clearUnderlay, { once: true });
+      // transitionend bubbles: only the face's own transition counts.
+      const onEnd = (e: TransitionEvent) => {
+        if (e.target === el) clearUnderlay();
+      };
+      el.addEventListener('transitionend', onEnd);
+      cancelEnd = () => el.removeEventListener('transitionend', onEnd);
       clearTimer = setTimeout(clearUnderlay, ms + 50);
     } else delete node.dataset.swipe;
   }
@@ -105,8 +116,7 @@ export function swipe(node: HTMLElement, options: Options) {
     // pointerup was lost (a pen lifted outside the card), so start afresh.
     if (pointerId !== null && e.pointerId !== pointerId) return;
     // A new touch ends any spring-back in progress, so its pending clear can't fire mid-gesture.
-    clearTimeout(clearTimer);
-    clearTimer = undefined;
+    cancelPendingClear();
     delete node.dataset.swipe;
     pointerId = e.pointerId;
     startX = lastX = e.clientX;
@@ -158,6 +168,7 @@ export function swipe(node: HTMLElement, options: Options) {
       opts = next;
     },
     destroy() {
+      cancelPendingClear();
       node.removeEventListener('pointerdown', onDown);
       node.removeEventListener('pointermove', onMove);
       node.removeEventListener('pointerup', onUp);
