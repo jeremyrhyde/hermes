@@ -10,6 +10,21 @@
     <link rel="icon" type="image/svg+xml" href="%BASE_URL%icon.svg" />
     <link rel="apple-touch-icon" href="%BASE_URL%apple-touch-icon.png" />
     <link rel="manifest" href="%BASE_URL%manifest.webmanifest" />
+    <script>
+      // Apply the saved Display preferences before first paint, so a Light
+      // reader never sees a dark flash. Mirrors resolveTheme/resolveMotion in
+      // src/lib/prefs.ts; prefs.svelte.ts takes over once the app mounts.
+      (function () {
+        var p = {};
+        try { p = JSON.parse(localStorage.getItem('hermes.prefs.v1') || '{}') || {}; } catch (e) {}
+        var mm = function (q) { return !!(window.matchMedia && window.matchMedia(q).matches); };
+        var root = document.documentElement;
+        root.dataset.theme = p.theme === 'light' || p.theme === 'dark' ? p.theme
+          : (mm('(prefers-color-scheme: light)') ? 'light' : 'dark');
+        root.dataset.motion = p.motion === 'full' || p.motion === 'reduced' ? p.motion
+          : (mm('(prefers-reduced-motion: reduce)') ? 'reduced' : 'full');
+      })();
+    </script>
     <title>Hermes</title>
   </head>
   <body>
