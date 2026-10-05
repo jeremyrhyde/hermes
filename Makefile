@@ -143,7 +143,7 @@ test:
 #   make health HERMES_HOST=http://192.168.1.50:8002
 # ---------------------------------------------------------------------------
 
-HERMES_HOST ?= http://localhost:8002
+HERMES_HOST ?= http://localhost:$(PORT)
 ID ?=
 
 .PHONY: health
