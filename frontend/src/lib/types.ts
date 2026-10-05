@@ -17,7 +17,7 @@ export interface FeedItem {
   saved: boolean;
 }
 
-/** One withheld group. `high`/`low` are null for an empty group; `unscored` has no range. */
+/** One withheld group, normalized. `high`/`low` are null for an empty group (and always for `unscored`). */
 export interface GateGroup { count: number; high: number | null; low: number | null }
 
 export interface Gating {
@@ -29,7 +29,12 @@ export interface Gating {
   unscored: GateGroup;
 }
 
-export interface Ranked extends Gating { displayed: FeedItem[] }
+/** GET api/ranked/ as sent. `unscored` carries only a count; normalizeGating
+ *  (lib/feed.ts) fills the rest so templates never meet `undefined`. */
+export interface Ranked extends Omit<Gating, 'unscored'> {
+  displayed: FeedItem[];
+  unscored: Pick<GateGroup, 'count'>;
+}
 
 export interface CategoryFilter { category: string; count: number; selected: boolean }
 export interface Categories { selected: string[]; filters: CategoryFilter[] }

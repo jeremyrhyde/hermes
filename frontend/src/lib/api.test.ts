@@ -36,6 +36,13 @@ describe('request', () => {
     expect(err.message).toBe('invalid score_cutoff 900; valid range: 0-100');
   });
 
+  it('falls back to the status when the error body is not JSON', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>oops</html>', { status: 502, statusText: 'Bad Gateway' })));
+    const err = (await api.sources().catch((e: unknown) => e)) as ApiError;
+    expect(err.status).toBe(502);
+    expect(err.message).toBe('Bad Gateway');
+  });
+
   it('returns undefined for a 204', async () => {
     vi.stubGlobal('fetch', respond(204));
     await expect(api.save(7)).resolves.toBeUndefined();
