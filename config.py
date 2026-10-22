@@ -58,6 +58,9 @@ class Settings(BaseSettings):
             interval. Default ``900`` (15 min).
         POLL_MAX_SECONDS: Upper clamp on each source's adaptive poll
             interval. Default ``14_400`` (4 h).
+        MAX_ARTICLE_AGE_DAYS: Feed entries published longer ago than this are
+            skipped at ingest, so a new source's backlog is never summarized.
+            Undated entries are kept. ``0`` disables the filter. Default ``7``.
         DEFAULT_SCORE_CUTOFF: Seed value only, used to populate the
             ``preferences`` table on first run; the live knob is
             runtime-editable from the UI thereafter. Default ``0`` — scoring
@@ -98,6 +101,7 @@ class Settings(BaseSettings):
     POLL_TICK_SECONDS: float = Field(default=60.0, gt=0)
     POLL_MIN_SECONDS: int = Field(default=900, gt=0)
     POLL_MAX_SECONDS: int = Field(default=14_400, gt=0)
+    MAX_ARTICLE_AGE_DAYS: int = Field(default=7, ge=0)
 
     DEFAULT_SCORE_CUTOFF: int = 0
     DEFAULT_MAX_DISPLAYED: int = 50

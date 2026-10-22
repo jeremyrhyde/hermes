@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -81,12 +81,14 @@ def _refs(n: int) -> list[ArticleRef]:
     ]
 
 
-async def _pipeline(store, driver, summarizer, bus=None, scorer=None):
+async def _pipeline(
+    store, driver, summarizer, bus=None, scorer=None, max_age_days=0
+):
     registry = SourceRegistry()
     registry.register(driver)
     return Pipeline(
         store=store, registry=registry, summarizer=summarizer,
-        bus=bus or EventBus(), scorer=scorer,
+        bus=bus or EventBus(), scorer=scorer, max_age_days=max_age_days,
     )
 
 
@@ -102,6 +104,54 @@ async def test_processes_source_end_to_end(store: StateStore) -> None:
 
     cur = await store.db.execute("SELECT COUNT(*) AS n FROM summaries")
     assert (await cur.fetchone())["n"] == 2
+
+
+def _aged(refs: list[ArticleRef], *ages: timedelta | None) -> list[ArticleRef]:
+    """Re-date *refs* to ``NOW - age``; ``None`` leaves the date unknown."""
+    return [
+        ref.model_copy(update={"published_at": None if age is None else NOW - age})
+        for ref, age in zip(refs, ages)
+    ]
+
+
+async def test_articles_older_than_max_age_are_never_ingested(
+    store: StateStore,
+) -> None:
+    await store.upsert_source(CFG)
+    refs = _aged(_refs(3), timedelta(days=1), timedelta(days=8), timedelta(days=30))
+    driver, summarizer = StubDriver(refs), StubSummarizer()
+    pipeline = await _pipeline(store, driver, summarizer, max_age_days=7)
+
+    result = await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert result.new_articles == 1
+    cur = await store.db.execute("SELECT guid FROM articles")
+    assert [row["guid"] for row in await cur.fetchall()] == ["g0"]
+
+
+async def test_an_undated_article_is_kept_by_the_age_filter(
+    store: StateStore,
+) -> None:
+    # A missing date is an unknown age, not an old one: dropping it would
+    # silently lose every post from a feed that omits pubDate.
+    await store.upsert_source(CFG)
+    driver, summarizer = StubDriver(_aged(_refs(1), None)), StubSummarizer()
+    pipeline = await _pipeline(store, driver, summarizer, max_age_days=7)
+
+    result = await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert result.new_articles == 1
+
+
+async def test_a_zero_max_age_ingests_everything(store: StateStore) -> None:
+    await store.upsert_source(CFG)
+    refs = _aged(_refs(2), timedelta(days=1), timedelta(days=400))
+    driver, summarizer = StubDriver(refs), StubSummarizer()
+    pipeline = await _pipeline(store, driver, summarizer, max_age_days=0)
+
+    result = await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert result.new_articles == 2
 
 
 async def test_rerun_is_idempotent(store: StateStore) -> None:

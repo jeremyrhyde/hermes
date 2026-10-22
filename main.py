@@ -489,7 +489,7 @@ async def _build_components(
 
     pipeline = Pipeline(
         store=store, registry=registry, summarizer=summarizer, bus=bus,
-        scorer=scorer,
+        scorer=scorer, max_age_days=settings.MAX_ARTICLE_AGE_DAYS,
     )
     poller = Poller(
         store=store,

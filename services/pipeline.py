@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from core.events import EventBus
 from core.state import StateStore, parse_iso, utcnow
@@ -87,6 +87,7 @@ class Pipeline:
         summarizer: Summarizer,
         bus: EventBus,
         scorer: Scorer | None = None,
+        max_age_days: int = 0,
     ) -> None:
         self._store = store
         self._registry = registry
@@ -97,6 +98,10 @@ class Pipeline:
         # with a blank score, not a lost one.
         self._scorer = scorer
         self._summarize_sem = asyncio.Semaphore(SUMMARIZE_CONCURRENCY)
+        # 0 disables the filter. Applied at ingest, so an old entry costs no
+        # row, no extraction and no paid call — a newly added feed's backlog
+        # never reaches the summarizer at all.
+        self._max_age = timedelta(days=max_age_days) if max_age_days > 0 else None
 
     # ------------------------------------------------------------------
     # Entry point
@@ -121,6 +126,8 @@ class Pipeline:
 
         new_ids: list[int] = []
         for ref in result.refs:
+            if self._too_old(ref, now):
+                continue
             article_id = await self._ingest(ref, now)
             if article_id is not None:
                 new_ids.append(article_id)
@@ -180,6 +187,13 @@ class Pipeline:
     # ------------------------------------------------------------------
     # Stages
     # ------------------------------------------------------------------
+    def _too_old(self, ref: ArticleRef, now: datetime) -> bool:
+        # An undated entry is an unknown age, not an old one: dropping it
+        # would silently lose every post from a feed that omits pubDate.
+        if self._max_age is None or ref.published_at is None:
+            return False
+        return now - ref.published_at > self._max_age
+
     async def _ingest(self, ref: ArticleRef, now: datetime) -> int | None:
         canonical = canonicalize_url(ref.url)
         article_id = await self._store.ingest_article(ref, canonical, now)
