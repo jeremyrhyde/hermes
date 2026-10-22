@@ -223,6 +223,59 @@ async def test_not_modified_short_circuits(store: StateStore) -> None:
     assert summarizer.calls == 0
 
 
+async def test_stranded_article_is_recovered_when_the_feed_is_unchanged(
+    store: StateStore,
+) -> None:
+    """Recovery must not wait for the feed to change.
+
+    An article whose summarize failed (an API outage, an empty credit balance)
+    is stranded until its source's next poll runs recovery. A quiet feed
+    answers every later poll with 304 or an identical body, so if that
+    short-circuit skipped recovery, the article would sit unsummarized until
+    the author next published — days, for a weekly newsletter.
+    """
+
+    class NotModifiedDriver(StubDriver):
+        async def discover(self, source, state):
+            return DiscoverResult(not_modified=True, etag="e1")
+
+    await store.upsert_source(CFG)
+    failing = StubSummarizer(fail=True)
+    first = await _pipeline(store, StubDriver(_refs(1)), failing)
+    await first.process_source(CFG, PollState(), now=NOW)
+    assert failing.calls == 1
+
+    summarizer = StubSummarizer()
+    pipeline = await _pipeline(store, NotModifiedDriver([]), summarizer)
+    result = await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert result.not_modified is True
+    assert result.etag == "e1"
+    assert result.new_articles == 0
+    assert summarizer.calls == 1
+    cur = await store.db.execute("SELECT summarized_at FROM articles")
+    assert (await cur.fetchone())["summarized_at"] is not None
+
+
+async def test_a_rate_limited_poll_skips_recovery(store: StateStore) -> None:
+    # Recovery can refetch article pages from the host that just sent 429.
+    class RateLimitedDriver(StubDriver):
+        async def discover(self, source, state):
+            return DiscoverResult(not_modified=True, retry_after_seconds=120)
+
+    await store.upsert_source(CFG)
+    failing = StubSummarizer(fail=True)
+    first = await _pipeline(store, StubDriver(_refs(1)), failing)
+    await first.process_source(CFG, PollState(), now=NOW)
+
+    summarizer = StubSummarizer()
+    pipeline = await _pipeline(store, RateLimitedDriver([]), summarizer)
+    result = await pipeline.process_source(CFG, PollState(), now=NOW)
+
+    assert result.retry_after_seconds == 120
+    assert summarizer.calls == 0
+
+
 async def test_stranded_article_is_recovered_on_a_later_poll(
     store: StateStore,
 ) -> None:

@@ -114,7 +114,9 @@ class Pipeline:
 
         result = await driver.discover(source, state)
 
-        if result.not_modified:
+        # A rate-limited host gets left alone entirely: recovery may refetch
+        # article pages from the same host that just asked us to back off.
+        if result.retry_after_seconds is not None:
             return PollOutcome(
                 not_modified=True,
                 etag=result.etag,
@@ -124,6 +126,9 @@ class Pipeline:
                 ttl_seconds=result.ttl_seconds,
             )
 
+        # An unchanged feed has nothing new to ingest, but recovery below still
+        # runs: a quiet source answers every poll this way, and skipping it
+        # would strand a failed article until the author next publishes.
         new_ids: list[int] = []
         for ref in result.refs:
             if self._too_old(ref, now):
@@ -175,12 +180,13 @@ class Pipeline:
                 failures += 1
 
         return PollOutcome(
-            not_modified=False,
+            not_modified=result.not_modified,
             new_articles=len(new_ids),
             failed=failures,
             etag=result.etag,
             last_modified=result.last_modified,
             content_hash=result.content_hash,
+            retry_after_seconds=result.retry_after_seconds,
             ttl_seconds=result.ttl_seconds,
         )
 
