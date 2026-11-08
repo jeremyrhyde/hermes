@@ -31,6 +31,9 @@ def _settings(tmp_path: Path, *, api_key: str, profile: str | None) -> Settings:
         PROFILE_PATH=str(tmp_path / "profile.md"),
         ANTHROPIC_API_KEY=api_key,
         POLL_TICK_SECONDS=3600.0,
+        # Never the real mailbox, whatever the repo's .env holds.
+        IMAP_USER="",
+        IMAP_PASSWORD="",
     )
 
 
@@ -175,3 +178,17 @@ async def test_every_failure_entry_carries_a_severity(tmp_path: Path) -> None:
             f["component"] for f in failures
         }
         assert all(f["severity"] in {"error", "advisory"} for f in failures), failures
+
+
+@pytest.mark.parametrize("built", [("k", None)], indirect=True)
+async def test_email_sources_have_a_driver_that_reports_missing_credentials(built) -> None:
+    from schemas.source import SourceConfig
+    from services.sources.base import PollState
+
+    _, poller, _ = built
+    registry = poller._pipeline._registry
+    assert "email" in registry.known_types()
+    cfg = SourceConfig(id="e", type="email", name="E", feed_url="https://e.substack.com",
+                       params={"list_id": "e.substack.com"})
+    with pytest.raises(RuntimeError, match="IMAP_USER"):
+        await registry.for_source(cfg).discover(cfg, PollState())

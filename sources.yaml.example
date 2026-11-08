@@ -49,6 +49,16 @@ sources:
     name: Platformer
     feed_url: https://www.platformer.news/feed
 
+  # A newsletter read from your mailbox instead of RSS (needs the IMAP_*
+  # settings in .env and a mail filter that labels it). list_id is the email's
+  # List-ID header without the <>; feed_url is the publication's home page.
+  - id: example-by-email
+    type: email
+    name: Example (by email)
+    feed_url: https://example.substack.com
+    params:
+      list_id: example.substack.com
+
   # Set enabled: false to keep a source configured but stop polling it.
   - id: example-paused
     type: substack

@@ -54,6 +54,7 @@ from services.pipeline import Pipeline
 from services.poller import Poller
 from services.profile import ProfileDistiller
 from services.scorer import ClaudeScorer
+from services.sources.mail import EmailDriver, ImapMailbox
 from services.sources.registry import SourceRegistry
 from services.sources.substack import SubstackDriver
 from services.summarizer import ClaudeSummarizer
@@ -372,6 +373,13 @@ async def _build_components(
 
     registry = SourceRegistry()
     registry.register(SubstackDriver(http))
+    mailbox = None
+    if settings.IMAP_USER and settings.IMAP_PASSWORD:
+        def mailbox() -> ImapMailbox:
+            return ImapMailbox(
+                settings.IMAP_HOST, settings.IMAP_USER, settings.IMAP_PASSWORD, settings.IMAP_LABEL
+            )
+    registry.register(EmailDriver(mailbox, lookback_days=settings.MAX_ARTICLE_AGE_DAYS))
 
     if not settings.ANTHROPIC_API_KEY:
         failures.append({

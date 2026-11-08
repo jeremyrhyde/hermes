@@ -63,6 +63,25 @@ make poll-now ID=astralcodexten   # force one source to poll immediately
 The poller wakes every 60s and polls each source on its own adaptive schedule
 (15 min–4 h). To see something immediately, use `make poll-now ID=<source-id>`.
 
+### Newsletters by email
+
+`*.substack.com` feeds answer Hermes's HTTP client with a Cloudflare challenge
+(403), while custom-domain Substacks are fine. For those, subscribe by email
+and use a `type: email` source instead (see `sources.yaml.example`):
+
+1. Subscribe to the newsletters with one mailbox, and add a mail filter that
+   puts them under one label (default `Hermes`).
+2. Create an app password for that mailbox (Gmail: Google Account → app
+   passwords, needs 2-Step Verification) and set `IMAP_USER` and
+   `IMAP_PASSWORD` in `.env`.
+3. Add one `type: email` source per newsletter, with `params.list_id` set to
+   its `List-ID` header (e.g. `epochai.substack.com`).
+
+The label is only read: it's opened read-only and nothing is marked as read.
+Only posts become articles (an email that links to one of its publication's
+`/p/<slug>` posts); welcome emails and sign-in codes are skipped. The email
+body is the article text, so nothing is fetched from the web.
+
 ## Layout
 
 | Path | Owns |

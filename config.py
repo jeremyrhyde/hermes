@@ -61,6 +61,17 @@ class Settings(BaseSettings):
         MAX_ARTICLE_AGE_DAYS: Feed entries published longer ago than this are
             skipped at ingest, so a new source's backlog is never summarized.
             Undated entries are kept. ``0`` disables the filter. Default ``7``.
+            Email sources also only read mail this recent.
+        IMAP_HOST: Mail server for ``type: email`` sources (newsletters read
+            from a mailbox label; see ``services/sources/mail.py``). Default
+            ``"imap.gmail.com"``.
+        IMAP_USER: Mailbox login, e.g. a Gmail address. Empty by default; email
+            sources fail with a clear error until it and the password are set.
+        IMAP_PASSWORD: An app password for that mailbox (Gmail: Google Account
+            → app passwords; spaces are ignored). Keep it in ``.env`` only.
+        IMAP_LABEL: The label (folder) the newsletters are filtered into. It is
+            only ever read: opened read-only, nothing marked as read. Default
+            ``"Hermes"``.
         DEFAULT_SCORE_CUTOFF: Seed value only, used to populate the
             ``preferences`` table on first run; the live knob is
             runtime-editable from the UI thereafter. Default ``0`` — scoring
@@ -102,6 +113,11 @@ class Settings(BaseSettings):
     POLL_MIN_SECONDS: int = Field(default=900, gt=0)
     POLL_MAX_SECONDS: int = Field(default=14_400, gt=0)
     MAX_ARTICLE_AGE_DAYS: int = Field(default=7, ge=0)
+
+    IMAP_HOST: str = "imap.gmail.com"
+    IMAP_USER: str = ""
+    IMAP_PASSWORD: str = ""
+    IMAP_LABEL: str = "Hermes"
 
     DEFAULT_SCORE_CUTOFF: int = 0
     DEFAULT_MAX_DISPLAYED: int = 50
