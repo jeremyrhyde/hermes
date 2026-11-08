@@ -1303,9 +1303,11 @@ class StateStore:
             category_clause = f"AND a.id IN ({all_of})"
             params.extend(categories)
             params.append(len(categories))
-        # Saved keeps its articles even once they're swiped out of the feed.
+        # Saved and the feed don't overlap: saving moves an article to Saved,
+        # and Saved keeps it even if it was swiped out of the feed.
         saved_clause = (
-            "AND a.saved_at IS NOT NULL" if saved_only else "AND a.dismissed_at IS NULL"
+            "AND a.saved_at IS NOT NULL" if saved_only
+            else "AND a.saved_at IS NULL AND a.dismissed_at IS NULL"
         )
         order_by = (
             "a.saved_at DESC" if saved_only
@@ -1416,6 +1418,7 @@ class StateStore:
             {_FEED_ROW_SELECT}
              {category_clause}
              AND a.dismissed_at IS NULL
+             AND a.saved_at IS NULL  -- saved articles live in Saved, not the feed
              -- Belt-and-braces, not the guarantee. Unscored rows are removed
              -- in Python below; that filter is what keeps them out of every
              -- ranking decision. This key only stops them riding along on an
@@ -1488,9 +1491,11 @@ class StateStore:
             params.extend(selected)
             params.append(len(selected))
         # A predicate on the join that already exists, not a second join.
-        # Saved keeps its articles even once they're swiped out of the feed.
+        # Saved and the feed don't overlap: saving moves an article to Saved,
+        # and Saved keeps it even if it was swiped out of the feed.
         saved_clause = (
-            "AND a.saved_at IS NOT NULL" if saved_only else "AND a.dismissed_at IS NULL"
+            "AND a.saved_at IS NOT NULL" if saved_only
+            else "AND a.saved_at IS NULL AND a.dismissed_at IS NULL"
         )
 
         cur = await self.db.execute(

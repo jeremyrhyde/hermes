@@ -1,4 +1,4 @@
-"""Dismissed articles: swiped out of the feed, kept in Saved, undoable."""
+"""Leaving the feed: dismissed articles go away; saved ones move to Saved."""
 
 from __future__ import annotations
 
@@ -100,3 +100,23 @@ async def test_filter_counts_skip_dismissed_but_saved_counts_keep_them(store: St
     await store.dismiss_article(ids["a"], NOW)
     assert (await store.category_counts(["ai"]))["ai"] == 1
     assert (await store.category_counts(["ai"], saved_only=True))["ai"] == 1
+
+
+async def test_saving_moves_an_article_from_the_feed_to_saved(store: StateStore) -> None:
+    ids = await _seed(store, [("a", 80), ("b", 70)])
+    await store.save_article(ids["a"], NOW)
+    assert _headlines((await store.ranked_items(cutoff=0, limit=10))["displayed"]) == ["b"]
+    assert _headlines(await store.feed_items()) == ["b"]
+    assert _headlines(await store.feed_items(saved_only=True)) == ["a"]
+    assert (await store.category_counts(["ai"]))["ai"] == 1
+    # Unsaving moves it back.
+    await store.unsave_article(ids["a"])
+    assert set(_headlines(await store.feed_items())) == {"a", "b"}
+
+
+async def test_unsaving_a_dismissed_article_does_not_bring_it_back(store: StateStore) -> None:
+    ids = await _seed(store, [("a", 80)])
+    await store.save_article(ids["a"], NOW)
+    await store.dismiss_article(ids["a"], NOW)
+    await store.unsave_article(ids["a"])
+    assert await store.feed_items() == []

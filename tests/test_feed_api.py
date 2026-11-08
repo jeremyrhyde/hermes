@@ -233,15 +233,18 @@ def test_saved_list_is_newest_saved_first(client: TestClient) -> None:
 def test_feed_items_report_saved_state(client: TestClient) -> None:
     client.post("/api/saved/1")
 
-    by_id = {i["article_id"]: i["saved"] for i in client.get("/api/feed/").json()}
-    assert by_id[1] is True
-    assert by_id[2] is False
+    saved = {i["article_id"]: i["saved"] for i in client.get("/api/saved/").json()}
+    feed = {i["article_id"]: i["saved"] for i in client.get("/api/feed/").json()}
+    assert saved == {1: True}
+    assert feed[2] is False
 
 
-def test_saving_does_not_remove_from_the_feed(client: TestClient) -> None:
+def test_saving_moves_the_article_out_of_the_feed(client: TestClient) -> None:
     before = len(client.get("/api/feed/").json())
     client.post("/api/saved/1")
-    assert len(client.get("/api/feed/").json()) == before
+    after = client.get("/api/feed/").json()
+    assert len(after) == before - 1
+    assert 1 not in {i["article_id"] for i in after}
 
 
 def test_saved_list_filters_by_category(client: TestClient) -> None:
@@ -272,7 +275,8 @@ def test_scope_saved_counts_only_saved_articles(client: TestClient) -> None:
     saved = {f["category"]: f["count"]
              for f in client.get("/api/categories/?scope=saved").json()["filters"]}
 
-    assert feed["ai"] == 2 and feed["finance"] == 1
+    # Article 2 moved to Saved, so the feed's "ai" count drops by one.
+    assert feed["ai"] == 1 and feed["finance"] == 1
     assert saved["ai"] == 1 and saved["finance"] == 0
 
 

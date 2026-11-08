@@ -20,7 +20,7 @@
   }
 </script>
 
-<div class="wrap" use:swipe={{ onRight: () => void toggleSaved(item, { undoToast: true }), onLeft: () => void swipeLeft(item) }}>
+<div class="wrap" use:swipe={{ onRight: () => void toggleSaved(item), onLeft: () => void swipeLeft(item) }}>
   <div class="under right" aria-hidden="true"><Icon name="star" size={20} /> {item.saved ? 'Unsave' : 'Save'}</div>
   <div class="under left" aria-hidden="true">{leftLabel} <Icon name="x" size={20} /></div>
 

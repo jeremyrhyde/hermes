@@ -63,7 +63,7 @@ export async function loadFeed(mode: Mode, cats: string[]): Promise<void> {
     feed.items = mergeInFlight(dropRemoved((list.value as FeedItem[] | null) ?? [], id, removedAt), feed.items, inFlight);
   } else {
     const ranked = list.value as Ranked | null;
-    feed.items = mergeInFlight(ranked?.displayed ?? [], feed.items, inFlight);
+    feed.items = mergeInFlight(dropRemoved(ranked?.displayed ?? [], id, removedAt), feed.items, inFlight);
     feed.gating = normalizeGating(ranked);
   }
   if (categories.status === 'fulfilled') {
@@ -119,19 +119,21 @@ export async function setSaved(item: FeedItem, next: boolean): Promise<boolean> 
   const id = item.article_id;
   const prev = item.saved;
   if (prev === next) return true;
-  const removing = !next && feed.mode === 'saved';
+  // Saved and the feed don't overlap, so either change takes the card off
+  // the list you're on: saving moves it out of the feed, unsaving out of Saved.
+  const removing = next ? feed.mode !== 'saved' : feed.mode === 'saved';
   const listKey = `${feed.mode}|${feed.cats.join(',')}`;
   const idx = feed.items.findIndex((i) => i.article_id === id);
+  const prevMark = removedAt.get(id);
   item.saved = next;
   if (removing && idx >= 0) feed.items.splice(idx, 1);
   if (removing) removedAt.set(id, Infinity);
-  const prevMark = removedAt.get(id);
-  if (next) removedAt.delete(id);
+  else if (next) removedAt.delete(id); // re-saved on Saved: it's back on this list
   begin(id);
   try {
     await (next ? api.save(id) : api.unsave(id));
   } catch (err) {
-    if (next && prevMark !== undefined) removedAt.set(id, prevMark);
+    if (prevMark !== undefined) removedAt.set(id, prevMark);
     else removedAt.delete(id);
     item.saved = prev;
     const cur = find(id);
@@ -176,14 +178,14 @@ export function rate(item: FeedItem, value: -1 | 1): Promise<boolean> {
   return setRating(item, toggledRating(item.rating, value));
 }
 
-/** Star tap or swipe right. Unsaving on Saved removes the card at once, so it
- *  always offers Undo; swipes always do too. */
-export async function toggleSaved(item: FeedItem, opts: { undoToast?: boolean } = {}): Promise<void> {
+/** Star tap or swipe right. Either way the card leaves the list it's on
+ *  (saving moves it to Saved; unsaving moves it back to the feed), so it
+ *  always offers Undo. */
+export async function toggleSaved(item: FeedItem): Promise<void> {
   const id = item.article_id;
   const next = !item.saved;
   if (!(await setSaved(item, next))) return;
-  if (!opts.undoToast && !(!next && feed.mode === 'saved')) return;
-  toast(next ? 'Saved' : 'Removed from saved', 'info', {
+  toast(next ? 'Moved to Saved' : 'Removed from saved', 'info', {
     action: { label: 'Undo', run: () => void setSaved(find(id) ?? item, !next) },
   });
 }
@@ -227,7 +229,7 @@ export async function setDismissed(item: FeedItem, next: boolean): Promise<boole
 export async function swipeLeft(item: FeedItem): Promise<void> {
   const id = item.article_id;
   if (swipeLeftAction(feed.mode).action === 'unsave') {
-    if (item.saved) await toggleSaved(item, { undoToast: true });
+    if (item.saved) await toggleSaved(item);
     return;
   }
   if (!(await setDismissed(item, true))) return;

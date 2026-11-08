@@ -46,9 +46,10 @@ export function mergeInFlight(fresh: FeedItem[], current: FeedItem[], inFlight: 
   });
 }
 
-/** On Saved, a list requested before an unsave settled can still contain the
- *  card. `removedAt` maps article id → the last request id that may predate
- *  the unsave (Infinity while the DELETE is in flight); drop those cards. */
+/** A list requested before a removal settled can still contain the card —
+ *  unsaving on Saved, or saving or dismissing on the feed. `removedAt` maps
+ *  article id → the last request id that may predate the removal (Infinity
+ *  while it's in flight); drop those cards. */
 export function dropRemoved(fresh: FeedItem[], requestId: number, removedAt: ReadonlyMap<number, number>): FeedItem[] {
   if (removedAt.size === 0) return fresh;
   return fresh.filter((i) => {

@@ -36,7 +36,7 @@ async def _seed(store: StateStore, tagged: dict[str, list[str]]) -> dict[str, in
 async def test_saving_marks_the_article(store: StateStore) -> None:
     ids = await _seed(store, {"a": ["ai"]})
     assert await store.save_article(ids["a"], NOW) is True
-    assert (await store.feed_items())[0]["saved"] is True
+    assert (await store.feed_items(saved_only=True))[0]["saved"] is True
 
 
 async def test_unsaved_articles_report_false(store: StateStore) -> None:
@@ -127,11 +127,11 @@ async def test_saved_only_composes_with_category_filter(store: StateStore) -> No
     assert [r["headline"] for r in rows] == ["both"]
 
 
-async def test_unfiltered_feed_still_includes_unsaved(store: StateStore) -> None:
-    """Saving does not remove an article from the Feed."""
+async def test_unfiltered_feed_holds_only_unsaved(store: StateStore) -> None:
+    """Saving moves an article out of the Feed and into Saved."""
     ids = await _seed(store, {"a": ["ai"], "b": ["ai"]})
     await store.save_article(ids["a"], NOW)
-    assert len(await store.feed_items()) == 2
+    assert [r["headline"] for r in await store.feed_items()] == ["b"]
 
 
 async def test_counts_scoped_to_saved_differ_from_global(store: StateStore) -> None:
@@ -141,7 +141,8 @@ async def test_counts_scoped_to_saved_differ_from_global(store: StateStore) -> N
     await store.save_article(ids["saved_ai"], NOW)
     await store.save_article(ids["saved_fin"], NOW)
 
-    assert await store.category_counts(["ai", "finance"]) == {"ai": 2, "finance": 1}
+    # The feed's counts cover only what's left in the feed: the unsaved article.
+    assert await store.category_counts(["ai", "finance"]) == {"ai": 1, "finance": 0}
     assert await store.category_counts(
         ["ai", "finance"], saved_only=True
     ) == {"ai": 1, "finance": 1}
