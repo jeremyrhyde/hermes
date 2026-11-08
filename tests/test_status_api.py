@@ -89,3 +89,17 @@ async def test_status_no_key_names_root_cause_once(store):
     body = await get_status(app)
     assert body["state"] == "degraded"
     assert body["summary"].count("API key") == 1 and "startup failure" not in body["summary"]
+
+
+async def test_status_disabled_source_is_not_failing(store):
+    from schemas.source import SourceConfig
+
+    await _seed_source(store, 105)
+    # Turned off in sources.yaml: no longer polled, so no longer "failing".
+    await store.upsert_source(
+        SourceConfig(id="acx", type="substack", name="ACX", feed_url="https://x/feed", enabled=False)
+    )
+    body = await get_status(make_app(store, "k"))
+    stats = {s["label"]: s for s in body["stats"]}
+    assert stats["Sources failing"]["value"] == 0
+    assert body["state"] == "ok"

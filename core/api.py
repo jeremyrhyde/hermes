@@ -959,7 +959,8 @@ def _build_status_router() -> APIRouter:
         usage = getattr(state, "claude_usage", None)
         store = getattr(state, "state_store", None)
         rows = await store.all_source_rows() if store is not None else []
-        failing = sum(1 for row in rows if row["error_count"])
+        # A disabled source is not polled, so its old error count is not a failure.
+        failing = sum(1 for row in rows if row["enabled"] and row["error_count"])
         polled = [row["last_polled_at"] for row in rows if row["last_polled_at"]]
         calls, errors = usage.counts() if usage is not None else (0, 0)
         key_missing = settings is None or not settings.ANTHROPIC_API_KEY
