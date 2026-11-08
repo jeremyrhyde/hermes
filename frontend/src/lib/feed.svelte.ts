@@ -1,6 +1,6 @@
 import { api, ApiError } from './api';
 import {
-  dropRemoved, EMPTY_GATING, mergeInFlight, normalizeGating, ratingRequest, Sequencer, swipeLeftResult, toggledRating,
+  dropRemoved, EMPTY_GATING, mergeInFlight, normalizeGating, ratingRequest, Sequencer, swipeLeftAction, toggledRating,
   type ArrivalEffect,
 } from './feed';
 import { normalizeCats, sameCats } from './route';
@@ -188,13 +188,50 @@ export async function toggleSaved(item: FeedItem, opts: { undoToast?: boolean } 
   });
 }
 
-/** Swipe left: rate down, or clear an existing rate-down. Undo restores the previous rating. */
+/** Take an article off the feed (``next``) or put it back. Removal is
+ *  optimistic, guarded against a reload resurrecting it the same way unsaving
+ *  on Saved is; putting it back reloads, so it returns to its ranked place. */
+export async function setDismissed(item: FeedItem, next: boolean): Promise<boolean> {
+  const id = item.article_id;
+  const listKey = `${feed.mode}|${feed.cats.join(',')}`;
+  const idx = feed.items.findIndex((i) => i.article_id === id);
+  if (next) {
+    if (idx >= 0) feed.items.splice(idx, 1);
+    removedAt.set(id, Infinity);
+  }
+  begin(id);
+  try {
+    await (next ? api.dismiss(id) : api.undismiss(id));
+  } catch (err) {
+    if (next) {
+      removedAt.delete(id);
+      if (!find(id) && idx >= 0 && listKey === `${feed.mode}|${feed.cats.join(',')}`) feed.items.splice(idx, 0, item);
+    }
+    toastError(err);
+    return false;
+  } finally {
+    end(id);
+  }
+  if (next) {
+    removedAt.set(id, seq.current);
+    void refreshCounts();
+  } else {
+    removedAt.delete(id);
+    if (!find(id)) await reloadFeed();
+  }
+  return true;
+}
+
+/** Swipe left (or the card's Remove button): off the list you're looking at,
+ *  with Undo. See swipeLeftAction. */
 export async function swipeLeft(item: FeedItem): Promise<void> {
   const id = item.article_id;
-  const prev = item.rating;
-  const { next, label } = swipeLeftResult(prev);
-  if (!(await setRating(item, next))) return;
-  toast(label, 'info', { action: { label: 'Undo', run: () => void setRating(find(id) ?? item, prev) } });
+  if (swipeLeftAction(feed.mode).action === 'unsave') {
+    if (item.saved) await toggleSaved(item, { undoToast: true });
+    return;
+  }
+  if (!(await setDismissed(item, true))) return;
+  toast('Removed', 'info', { action: { label: 'Undo', run: () => void setDismissed(find(id) ?? item, false) } });
 }
 
 export function logInteraction(id: number, kind: 'expand' | 'click_through'): void {

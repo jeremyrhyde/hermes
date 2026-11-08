@@ -79,8 +79,10 @@ export function toggledRating(current: RatingValue, value: -1 | 1): RatingValue 
   return current === value ? null : value;
 }
 
-export function swipeLeftResult(current: RatingValue): { next: RatingValue; label: string } {
-  return current === -1 ? { next: null, label: 'Rating cleared' } : { next: -1, label: 'Rated down' };
+/** What a left swipe does: take the card off the list you're looking at.
+ *  On the feed that's dismissing it (it stays in Saved); on Saved, unsaving it. */
+export function swipeLeftAction(mode: Mode): { action: 'dismiss' | 'unsave'; label: string } {
+  return mode === 'saved' ? { action: 'unsave', label: 'Unsave' } : { action: 'dismiss', label: 'Remove' };
 }
 
 export function ratingRequest(value: RatingValue): { method: 'DELETE' } | { method: 'PUT'; value: -1 | 1 } {

@@ -1,7 +1,8 @@
 <script lang="ts">
   import { slide } from 'svelte/transition';
   import Icon from './Icon.svelte';
-  import { logInteraction, rate, swipeLeft, toggleSaved } from '../lib/feed.svelte';
+  import { feed, logInteraction, rate, swipeLeft, toggleSaved } from '../lib/feed.svelte';
+  import { swipeLeftAction } from '../lib/feed';
   import { relTime } from '../lib/format';
   import { dur } from '../lib/motion';
   import { patchRoute, router } from '../lib/router.svelte';
@@ -10,6 +11,7 @@
 
   let { item }: { item: FeedItem } = $props();
   const open = $derived(router.route.open === item.article_id);
+  const leftLabel = $derived(swipeLeftAction(feed.mode).label);
 
   function toggleOpen(): void {
     const opening = !open;
@@ -20,7 +22,7 @@
 
 <div class="wrap" use:swipe={{ onRight: () => void toggleSaved(item, { undoToast: true }), onLeft: () => void swipeLeft(item) }}>
   <div class="under right" aria-hidden="true"><Icon name="star" size={20} /> {item.saved ? 'Unsave' : 'Save'}</div>
-  <div class="under left" aria-hidden="true">{item.rating === -1 ? 'Clear rating' : 'Rate down'} <Icon name="thumb-down" size={20} /></div>
+  <div class="under left" aria-hidden="true">{leftLabel} <Icon name="x" size={20} /></div>
 
   <article class="card face" data-swipe-face>
     <!-- The star is a sibling of the head button, never a child: a button
@@ -50,6 +52,12 @@
             onclick={() => logInteraction(item.article_id, 'click_through')}>
             Read the full article <Icon name="external-link" size={16} />
           </a>
+          {#if feed.mode !== 'saved'}
+            <!-- The button twin of a left swipe, for mouse, keyboard and anyone who doesn't swipe. -->
+            <button type="button" class="btn remove" onclick={() => void swipeLeft(item)}>
+              <Icon name="x" size={16} /> Remove
+            </button>
+          {/if}
           <div class="rating" role="group" aria-label="Rate this article">
             <button type="button" class="icon-btn up" class:on={item.rating === 1} aria-pressed={item.rating === 1}
               aria-label="Rate up" onclick={() => void rate(item, 1)}><Icon name="thumb-up" size={20} /></button>
@@ -69,7 +77,7 @@
     padding: 0 var(--space-6); border-radius: var(--radius-lg); font-size: var(--text-sm); font-weight: 600;
   }
   .under.right { justify-content: flex-start; background: var(--color-accent-soft); color: var(--color-accent); }
-  .under.left { justify-content: flex-end; background: var(--color-danger-soft); color: var(--color-danger); }
+  .under.left { justify-content: flex-end; background: var(--color-surface-3); color: var(--color-text-muted); }
   /* data-swipe is set by the swipe action at runtime, so the compiler can't see it. */
   .wrap:global([data-swipe='right']) .under.right, .wrap:global([data-swipe='left']) .under.left { display: flex; }
 

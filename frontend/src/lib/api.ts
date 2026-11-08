@@ -64,6 +64,8 @@ export const api = {
   unsave: (id: number) => request<void>('DELETE', `/saved/${id}`),
   rate: (id: number, value: -1 | 1) => request<void>('PUT', `/articles/${id}/rating`, { value }),
   clearRating: (id: number) => request<void>('DELETE', `/articles/${id}/rating`),
+  dismiss: (id: number) => request<void>('POST', `/articles/${id}/dismiss`),
+  undismiss: (id: number) => request<void>('DELETE', `/articles/${id}/dismiss`),
   interaction: (id: number, kind: 'expand' | 'click_through') =>
     request<void>('POST', `/articles/${id}/interactions`, { kind }),
 

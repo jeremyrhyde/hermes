@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   arrivalEffect, dropRemoved, EMPTY_GATING, mergeInFlight, normalizeGating, ratingRequest, Sequencer, shouldHold,
-  swipeLeftResult, toggledRating,
+  swipeLeftAction, toggledRating,
 } from './feed';
 import type { FeedItem } from './types';
 
@@ -81,9 +81,8 @@ describe('ratings', () => {
     expect(toggledRating(null, -1)).toBe(-1);
   });
   it('swipe left rates down, or clears an existing rate-down', () => {
-    expect(swipeLeftResult(null)).toEqual({ next: -1, label: 'Rated down' });
-    expect(swipeLeftResult(1)).toEqual({ next: -1, label: 'Rated down' });
-    expect(swipeLeftResult(-1)).toEqual({ next: null, label: 'Rating cleared' });
+    expect(swipeLeftAction('feed')).toEqual({ action: 'dismiss', label: 'Remove' });
+    expect(swipeLeftAction('saved')).toEqual({ action: 'unsave', label: 'Unsave' });
   });
   it('maps a rating to its request', () => {
     expect(ratingRequest(null)).toEqual({ method: 'DELETE' });
