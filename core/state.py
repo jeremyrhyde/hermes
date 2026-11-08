@@ -249,20 +249,23 @@ class StateStore:
         Poll state (etag, last_modified, content_hash, error_count, next_poll_at)
         is deliberately NOT touched — re-reading sources.yaml on every restart
         must not discard conditional-GET state, or every restart would refetch
-        every feed in full.
+        every feed in full. ``params`` is declarative too and lives in
+        ``metadata`` (``{"params": {...}}``) so drivers get it back.
         """
 
         await self.db.execute(
             """
-            INSERT INTO sources (id, type, name, feed_url, enabled)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO sources (id, type, name, feed_url, enabled, metadata)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 type = excluded.type,
                 name = excluded.name,
                 feed_url = excluded.feed_url,
-                enabled = excluded.enabled
+                enabled = excluded.enabled,
+                metadata = excluded.metadata
             """,
-            (cfg.id, cfg.type, cfg.name, cfg.feed_url, int(cfg.enabled)),
+            (cfg.id, cfg.type, cfg.name, cfg.feed_url, int(cfg.enabled),
+             json.dumps({"params": cfg.params})),
         )
         await self.db.commit()
 
@@ -285,13 +288,20 @@ class StateStore:
             """,
             (iso(now), iso(now)),
         )
-        return [
-            SourceConfig(
-                id=row["id"], type=row["type"], name=row["name"],
-                feed_url=row["feed_url"], enabled=bool(row["enabled"]),
-            )
-            for row in await cur.fetchall()
-        ]
+        return [self.source_config(row) for row in await cur.fetchall()]
+
+    @staticmethod
+    def source_config(row: aiosqlite.Row) -> "SourceConfig":
+        """A source row back as its SourceConfig, ``params`` included."""
+
+        from schemas.source import SourceConfig  # local import avoids a cycle
+
+        meta = json.loads(row["metadata"] or "{}")
+        return SourceConfig(
+            id=row["id"], type=row["type"], name=row["name"],
+            feed_url=row["feed_url"], enabled=bool(row["enabled"]),
+            params=meta.get("params") or {},
+        )
 
     async def update_source_poll_state(
         self,

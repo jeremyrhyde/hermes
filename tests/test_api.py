@@ -114,3 +114,20 @@ async def test_unsubscribe_is_idempotent(bus: EventBus) -> None:
         raise AssertionError("should not be called")
 
     bus.unsubscribe(EventType.SYSTEM_READY, never_registered)
+
+
+async def test_poll_now_passes_source_params(tmp_path) -> None:
+    """POST /api/sources/{id}/poll rebuilds the source with its params, like the poller."""
+    from core.state import StateStore
+    from schemas.source import SourceConfig
+
+    store = StateStore(str(tmp_path / "p.db"))
+    await store.start()
+    try:
+        await store.upsert_source(SourceConfig(
+            id="epoch", type="email", name="Epoch", feed_url="https://e", params={"list_id": "e.substack.com"},
+        ))
+        row = await store.get_source_row("epoch")
+        assert StateStore.source_config(row).params == {"list_id": "e.substack.com"}
+    finally:
+        await store.close()

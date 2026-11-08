@@ -182,3 +182,19 @@ async def test_disabled_source_is_not_due(
 
     assert await store.due_sources(NOW) == []
     assert [s.id for s in await store.due_sources(NOW + timedelta(hours=5))] == ["acx"]
+
+
+async def test_due_sources_carry_params_from_sources_yaml(store: StateStore) -> None:
+    """Drivers that need per-source settings (e.g. an email source's list_id) get them."""
+    cfg = SourceConfig(
+        id="epoch", type="email", name="Epoch AI", feed_url="https://epochai.substack.com",
+        params={"list_id": "epochai.substack.com"},
+    )
+    await store.upsert_source(cfg)
+    [due] = await store.due_sources(NOW)
+    assert due.params == {"list_id": "epochai.substack.com"}
+
+    # Editing sources.yaml updates them on the next start, like the other declarative fields.
+    await store.upsert_source(cfg.model_copy(update={"params": {"list_id": "other.substack.com"}}))
+    [due] = await store.due_sources(NOW)
+    assert due.params == {"list_id": "other.substack.com"}

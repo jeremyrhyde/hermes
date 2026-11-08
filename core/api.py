@@ -44,11 +44,11 @@ from fastapi import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from core.state import parse_iso
+from core.state import StateStore, parse_iso
 from schemas.article import FeedItem, InteractionIn, RatingIn
 from schemas.preferences import PreferenceIn
 from schemas.profile import ApprovalIn, ProfileIn
-from schemas.source import SourceConfig, SourceRef
+from schemas.source import SourceRef
 # The one import from `services` in this layer, and deliberate: two constants
 # with no behavior, no cycle (`services.profile` imports nothing from `core`),
 # and the alternative is restating the distillation prompt's version here where
@@ -60,7 +60,6 @@ from services.profile import DISTILL_VERSION, DistillationError, ProfileDistille
 if TYPE_CHECKING:  # pragma: no cover
     from config import Settings
     from core.events import EventBus
-    from core.state import StateStore
     from core.websocket import WebSocketManager
 
 logger = logging.getLogger(__name__)
@@ -853,12 +852,7 @@ def _build_sources_router() -> APIRouter:
                 detail=f"source {source_id!r} not found",
             )
 
-        await poller.poll_one(
-            SourceConfig(
-                id=row["id"], type=row["type"], name=row["name"],
-                feed_url=row["feed_url"], enabled=bool(row["enabled"]),
-            )
-        )
+        await poller.poll_one(StateStore.source_config(row))
         return {"polled": source_id}
 
     return router
