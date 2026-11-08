@@ -16,7 +16,7 @@ async def test_apply_migrations_creates_schema(tmp_path) -> None:
     async with aiosqlite.connect(tmp_path / "t.db") as db:
         version = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert version == 6
+        assert version == 7
         names = await _table_names(db)
         assert {
             "sources", "articles", "summaries", "scores",
@@ -30,7 +30,7 @@ async def test_apply_migrations_is_idempotent(tmp_path) -> None:
         first = await apply_migrations(db, MIGRATIONS_DIR)
         second = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert first == second == 6
+        assert first == second == 7
 
 
 async def test_metadata_columns_exist_from_migration_001(tmp_path) -> None:
@@ -139,7 +139,7 @@ async def test_migration_002_creates_article_categories(tmp_path) -> None:
     async with aiosqlite.connect(tmp_path / "t.db") as db:
         version = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert version == 6
+        assert version == 7
         cur = await db.execute("PRAGMA table_info(article_categories)")
         cols = {row[1] for row in await cur.fetchall()}
         assert {"article_id", "category"} <= cols
@@ -176,7 +176,7 @@ async def test_migration_003_adds_saved_at(tmp_path) -> None:
     async with aiosqlite.connect(tmp_path / "t.db") as db:
         version = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert version == 6
+        assert version == 7
         cur = await db.execute("PRAGMA table_info(articles)")
         cols = {row[1] for row in await cur.fetchall()}
         assert "saved_at" in cols
@@ -188,11 +188,11 @@ async def test_migration_003_is_not_rerun_on_restart(tmp_path) -> None:
     than merely correct."""
     db_path = tmp_path / "t.db"
     async with aiosqlite.connect(db_path) as db:
-        assert await apply_migrations(db, MIGRATIONS_DIR) == 6
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 7
 
     async with aiosqlite.connect(db_path) as db:
         # Raises OperationalError: duplicate column name if the filter regresses.
-        assert await apply_migrations(db, MIGRATIONS_DIR) == 6
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 7
 
 
 async def test_saved_at_defaults_to_null(tmp_path) -> None:
@@ -234,7 +234,7 @@ async def test_migration_004_adds_unusable_columns(tmp_path) -> None:
     async with aiosqlite.connect(tmp_path / "t.db") as db:
         version = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert version == 6
+        assert version == 7
         cur = await db.execute("PRAGMA table_info(articles)")
         cols = {row[1] for row in await cur.fetchall()}
         assert {"unusable_at", "unusable_reason"} <= cols
@@ -244,11 +244,11 @@ async def test_migration_004_is_not_rerun_on_restart(tmp_path) -> None:
     """Another ADD COLUMN, so the version filter stays load-bearing."""
     db_path = tmp_path / "t.db"
     async with aiosqlite.connect(db_path) as db:
-        assert await apply_migrations(db, MIGRATIONS_DIR) == 6
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 7
 
     async with aiosqlite.connect(db_path) as db:
         # Raises OperationalError: duplicate column name if the filter regresses.
-        assert await apply_migrations(db, MIGRATIONS_DIR) == 6
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 7
 
 
 async def test_unusable_defaults_to_null(tmp_path) -> None:
@@ -284,7 +284,7 @@ async def test_migration_005_adds_rejected_at(tmp_path) -> None:
     async with aiosqlite.connect(tmp_path / "t.db") as db:
         version = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert version == 6
+        assert version == 7
         cur = await db.execute("PRAGMA table_info(profile_versions)")
         assert "rejected_at" in {row[1] for row in await cur.fetchall()}
 
@@ -293,9 +293,9 @@ async def test_migration_005_is_not_rerun_on_restart(tmp_path) -> None:
     """Another ADD COLUMN, so the version filter stays load-bearing."""
     db_path = tmp_path / "t.db"
     async with aiosqlite.connect(db_path) as db:
-        assert await apply_migrations(db, MIGRATIONS_DIR) == 6
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 7
     async with aiosqlite.connect(db_path) as db:
-        assert await apply_migrations(db, MIGRATIONS_DIR) == 6
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 7
 
 
 async def test_rejected_at_defaults_to_null(tmp_path) -> None:
@@ -320,7 +320,7 @@ async def test_migration_006_adds_distill_version(tmp_path) -> None:
     async with aiosqlite.connect(tmp_path / "t.db") as db:
         version = await apply_migrations(db, MIGRATIONS_DIR)
 
-        assert version == 6
+        assert version == 7
         cur = await db.execute("PRAGMA table_info(profile_versions)")
         assert "distill_version" in {row[1] for row in await cur.fetchall()}
 
@@ -329,9 +329,9 @@ async def test_migration_006_is_not_rerun_on_restart(tmp_path) -> None:
     """Another ADD COLUMN, so the version filter stays load-bearing."""
     db_path = tmp_path / "t.db"
     async with aiosqlite.connect(db_path) as db:
-        assert await apply_migrations(db, MIGRATIONS_DIR) == 6
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 7
     async with aiosqlite.connect(db_path) as db:
-        assert await apply_migrations(db, MIGRATIONS_DIR) == 6
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 7
 
 
 async def test_distill_version_defaults_to_null(tmp_path) -> None:
@@ -347,3 +347,19 @@ async def test_distill_version_defaults_to_null(tmp_path) -> None:
             "SELECT distill_version FROM profile_versions WHERE version = 'profile-v1'"
         )
         assert (await cur.fetchone())[0] is None
+
+
+async def test_migration_007_adds_dismissed_at(tmp_path) -> None:
+    async with aiosqlite.connect(tmp_path / "t.db") as db:
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 7
+        cur = await db.execute("PRAGMA table_info(articles)")
+        assert "dismissed_at" in {row[1] for row in await cur.fetchall()}
+
+
+async def test_migration_007_is_not_rerun_on_restart(tmp_path) -> None:
+    """Another ADD COLUMN, so the version filter stays load-bearing."""
+    db_path = tmp_path / "t.db"
+    async with aiosqlite.connect(db_path) as db:
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 7
+    async with aiosqlite.connect(db_path) as db:
+        assert await apply_migrations(db, MIGRATIONS_DIR) == 7

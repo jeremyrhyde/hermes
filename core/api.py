@@ -751,6 +751,23 @@ constraint violation surfacing as a 500.
 def _build_articles_router() -> APIRouter:
     router = APIRouter(prefix="/articles", tags=["feedback"])
 
+    @router.post("/{article_id}/dismiss", status_code=status.HTTP_204_NO_CONTENT)
+    async def dismiss(article_id: int, request: Request) -> None:
+        """Remove an article from the feed (a left swipe). Idempotent.
+
+        It stays in Saved if saved, and keeps its rating. ``DELETE`` undoes it.
+        """
+
+        if not await _store(request).dismiss_article(article_id, datetime.now(timezone.utc)):
+            raise _unknown_article(article_id)
+
+    @router.delete("/{article_id}/dismiss", status_code=status.HTTP_204_NO_CONTENT)
+    async def undismiss(article_id: int, request: Request) -> None:
+        """Undo a dismissal. Undoing one that never happened is a no-op."""
+
+        if not await _store(request).undismiss_article(article_id):
+            raise _unknown_article(article_id)
+
     @router.put("/{article_id}/rating", status_code=status.HTTP_204_NO_CONTENT)
     async def rate(article_id: int, body: RatingIn, request: Request) -> None:
         """Rate an article ±1.

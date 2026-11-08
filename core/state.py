@@ -613,6 +613,26 @@ class StateStore:
             (article_id,),
         )
 
+    async def dismiss_article(self, article_id: int, at: datetime) -> bool:
+        """Swipe *article_id* out of the feed. Returns whether the article exists.
+
+        ``COALESCE`` keeps the first dismissal's time; idempotent like
+        :meth:`save_article`, whose docstring explains the existence boolean.
+        """
+
+        return await self._update_exists(
+            "UPDATE articles SET dismissed_at = COALESCE(dismissed_at, ?) WHERE id = ? RETURNING id",
+            (iso(at), article_id),
+        )
+
+    async def undismiss_article(self, article_id: int) -> bool:
+        """Undo :meth:`dismiss_article`. Returns whether the article exists."""
+
+        return await self._update_exists(
+            "UPDATE articles SET dismissed_at = NULL WHERE id = ? RETURNING id",
+            (article_id,),
+        )
+
     # ------------------------------------------------------------------
     # Unusable extractions
     # ------------------------------------------------------------------
@@ -1283,7 +1303,10 @@ class StateStore:
             category_clause = f"AND a.id IN ({all_of})"
             params.extend(categories)
             params.append(len(categories))
-        saved_clause = "AND a.saved_at IS NOT NULL" if saved_only else ""
+        # Saved keeps its articles even once they're swiped out of the feed.
+        saved_clause = (
+            "AND a.saved_at IS NOT NULL" if saved_only else "AND a.dismissed_at IS NULL"
+        )
         order_by = (
             "a.saved_at DESC" if saved_only
             else "COALESCE(a.published_at, a.fetched_at) DESC"
@@ -1392,6 +1415,7 @@ class StateStore:
             f"""
             {_FEED_ROW_SELECT}
              {category_clause}
+             AND a.dismissed_at IS NULL
              -- Belt-and-braces, not the guarantee. Unscored rows are removed
              -- in Python below; that filter is what keeps them out of every
              -- ranking decision. This key only stops them riding along on an
@@ -1464,7 +1488,10 @@ class StateStore:
             params.extend(selected)
             params.append(len(selected))
         # A predicate on the join that already exists, not a second join.
-        saved_clause = "AND a.saved_at IS NOT NULL" if saved_only else ""
+        # Saved keeps its articles even once they're swiped out of the feed.
+        saved_clause = (
+            "AND a.saved_at IS NOT NULL" if saved_only else "AND a.dismissed_at IS NULL"
+        )
 
         cur = await self.db.execute(
             f"""
